@@ -1,0 +1,181 @@
+name: build-and-release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        with:
+          persist-credentials: false
+      - name: Run native tests
+        run: make test
+
+  windows-artifacts:
+    needs: test-linux
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Zig 0.16.0
+        shell: pwsh
+        run: |
+          $uri = 'https://ziglang.org/download/0.16.0/zig-x86_64-windows-0.16.0.zip'
+          $expected = '68659eb5f1e4eb1437a722f1dd889c5a322c9954607f5edcf337bc3684a75a7e'
+          $archive = Join-Path $env:RUNNER_TEMP 'zig.zip'
+          $destination = Join-Path $env:RUNNER_TEMP 'zig'
+          Invoke-WebRequest -Uri $uri -OutFile $archive
+          $actual = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $expected) { throw 'Zig archive hash mismatch.' }
+          Expand-Archive -LiteralPath $archive -DestinationPath $destination
+          $zig = Get-ChildItem -LiteralPath $destination -Filter zig.exe -Recurse | Select-Object -First 1
+          if ($null -eq $zig) { throw 'zig.exe missing after extraction.' }
+          "ZIG_EXE=$($zig.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Build and test Windows widget
+        shell: pwsh
+        run: .\scripts\build-windows.ps1 -Zig $env:ZIG_EXE
+
+      - name: Install pinned Inno Setup 7.1.0
+        shell: pwsh
+        run: |
+          $uri = 'https://github.com/jrsoftware/issrc/releases/download/is-7_1_0/innosetup-7.1.0-x64.exe'
+          $expected = '0362a383ed217d4c4239b5933866dd96d3eb2102737da92f80f6057a4b40df2f'
+          $installer = Join-Path $env:RUNNER_TEMP 'innosetup.exe'
+          $destination = Join-Path $env:RUNNER_TEMP 'inno'
+          Invoke-WebRequest -Uri $uri -OutFile $installer
+          $actual = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $expected) { throw 'Inno Setup installer hash mismatch.' }
+          $process = Start-Process -FilePath $installer -ArgumentList @(
+            '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=$destination"
+          ) -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Inno Setup install failed: $($process.ExitCode)" }
+          $iscc = Join-Path $destination 'ISCC.exe'
+          if (-not (Test-Path -LiteralPath $iscc -PathType Leaf)) { throw 'ISCC.exe missing.' }
+          "ISCC_EXE=$iscc" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Package setup and portable ZIP
+        shell: pwsh
+        run: .\scripts\package-release.ps1 -Iscc $env:ISCC_EXE
+
+      - name: Silent installer and uninstaller smoke test
+        shell: pwsh
+        run: |
+          $version = (Get-Content -LiteralPath 'VERSION' -Raw).Trim()
+          $setup = (Resolve-Path "dist\EVO-X2-PMode-Widget-Setup-v$version.exe").Path
+          $installLog = Join-Path $env:RUNNER_TEMP 'setup-install.log'
+          $uninstallLog = Join-Path $env:RUNNER_TEMP 'setup-uninstall.log'
+          $logDir = Join-Path (Resolve-Path 'dist').Path 'smoke-logs'
+          [IO.Directory]::CreateDirectory($logDir) | Out-Null
+          try {
+            $install = Start-Process -FilePath $setup -ArgumentList @(
+              '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', "/LOG=$installLog"
+            ) -Wait -PassThru
+            if ($install.ExitCode -ne 0) { throw "Silent install failed: $($install.ExitCode)" }
+
+            $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+            $taskName = "EVO-X2 P-MODE Widget $sid"
+            $appDir = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles)) 'EVO-X2 P-MODE Overlay'
+            $app = Join-Path $appDir 'evox2-pmode-overlay.exe'
+            $shortcut = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::Programs)) 'EVO-X2 P-MODE Widget.lnk'
+            if (-not (Test-Path -LiteralPath $app -PathType Leaf)) { throw 'Installed app missing.' }
+            if (-not (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue)) { throw 'Autostart task missing.' }
+            if (-not (Test-Path -LiteralPath $shortcut -PathType Leaf)) { throw 'Start-menu shortcut missing.' }
+
+            $roots = @(
+              'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall',
+              'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall'
+            )
+            $entry = $roots | ForEach-Object {
+              Get-ChildItem -LiteralPath $_ -ErrorAction SilentlyContinue | Get-ItemProperty -ErrorAction SilentlyContinue
+            } | Where-Object DisplayName -eq 'EVO-X2 P-MODE Widget' | Select-Object -First 1
+            if ($null -eq $entry) { throw 'Uninstall registry entry missing.' }
+            $uninstallCommand = [string]$entry.UninstallString
+            if ($uninstallCommand -notmatch '^"([^"]+)"') { throw 'Unexpected uninstall command.' }
+            $uninstaller = $Matches[1]
+            $remove = Start-Process -FilePath $uninstaller -ArgumentList @(
+              '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=$uninstallLog"
+            ) -PassThru
+
+            $deadline = [DateTime]::UtcNow.AddSeconds(90)
+            do {
+              Start-Sleep -Milliseconds 500
+              $taskStillExists = $null -ne (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue)
+              $arpStillExists = $null -ne ($roots | ForEach-Object {
+                Get-ChildItem -LiteralPath $_ -ErrorAction SilentlyContinue | Get-ItemProperty -ErrorAction SilentlyContinue
+              } | Where-Object DisplayName -eq 'EVO-X2 P-MODE Widget' | Select-Object -First 1)
+              $finished = -not (Test-Path -LiteralPath $appDir) -and -not $taskStillExists -and -not $arpStillExists
+            } while (-not $finished -and [DateTime]::UtcNow -lt $deadline)
+            if (-not $finished) { throw 'Silent uninstall did not finish cleanly before timeout.' }
+            if (Test-Path -LiteralPath $shortcut) { throw 'Start-menu shortcut remained after uninstall.' }
+            Write-Host 'INSTALLER_SMOKE=PASS'
+          } finally {
+            if (Test-Path -LiteralPath $installLog) { Copy-Item -LiteralPath $installLog -Destination $logDir -Force }
+            if (Test-Path -LiteralPath $uninstallLog) { Copy-Item -LiteralPath $uninstallLog -Destination $logDir -Force }
+          }
+
+      - name: Upload build artifacts and smoke logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: evox2-pmode-widget-windows
+          path: dist/*
+          if-no-files-found: warn
+          retention-days: 30
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: windows-artifacts
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+        with:
+          name: evox2-pmode-widget-windows
+          path: dist
+      - name: Verify tag matches release version
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          version="$(tr -d '\r\n' < VERSION)"
+          test "$TAG_NAME" = "v$version"
+      - name: Attest release artifacts
+        uses: actions/attest-build-provenance@96b4a1ef7235a096b17240c259729fdd70c83d45  # v2
+        with:
+          subject-path: |
+            dist/EVO-X2-PMode-Widget-Setup-v*.exe
+            dist/EVO-X2-PMode-Widget-v*-windows-x64.zip
+            dist/SHA256SUMS.txt
+      - name: Publish GitHub prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          version="$(tr -d '\r\n' < VERSION)"
+          gh release create "$TAG_NAME" \
+            dist/EVO-X2-PMode-Widget-Setup-v${version}.exe \
+            dist/EVO-X2-PMode-Widget-v${version}-windows-x64.zip \
+            dist/SHA256SUMS.txt \
+            --verify-tag \
+            --prerelease \
+            --title "EVO-X2 P-MODE Widget v${version}" \
+            --notes-file CHANGELOG.md

@@ -16,7 +16,26 @@ trap {
     exit 1
 }
 
-$programFiles = [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles)
+$registry = [Microsoft.Win32.RegistryKey]::OpenBaseKey(
+    [Microsoft.Win32.RegistryHive]::LocalMachine,
+    [Microsoft.Win32.RegistryView]::Registry64
+)
+try {
+    $currentVersion = $registry.OpenSubKey('SOFTWARE\Microsoft\Windows\CurrentVersion')
+    if ($null -eq $currentVersion) {
+        throw '64-bit Windows CurrentVersion registry key is unavailable.'
+    }
+    try {
+        $programFiles = [string]$currentVersion.GetValue('ProgramFilesDir')
+    } finally {
+        $currentVersion.Dispose()
+    }
+} finally {
+    $registry.Dispose()
+}
+if ([string]::IsNullOrWhiteSpace($programFiles)) {
+    throw '64-bit Program Files path is unavailable.'
+}
 $expectedDirectory = [IO.Path]::GetFullPath((Join-Path $programFiles 'EVO-X2 P-MODE Overlay'))
 $expectedApp = [IO.Path]::GetFullPath((Join-Path $expectedDirectory 'evox2-pmode-overlay.exe'))
 $AppPath = [IO.Path]::GetFullPath($AppPath)

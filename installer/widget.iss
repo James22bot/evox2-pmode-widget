@@ -64,7 +64,8 @@ end;
 procedure RegisterAutostart;
 var
   ResultCode: Integer;
-  ScriptPath, AppPath, WorkDir, LogPath, LogText, Params: String;
+  ScriptPath, AppPath, WorkDir, LogPath, Params: String;
+  LogText: AnsiString;
 begin
   ScriptPath := ExpandConstant('{app}\Register-Autostart.ps1');
   AppPath := ExpandConstant('{app}\{#MyAppExeName}');
@@ -87,7 +88,8 @@ end;
 procedure RemoveAutostart;
 var
   ResultCode: Integer;
-  ScriptPath, WorkDir, LogPath, LogText, Params: String;
+  ScriptPath, WorkDir, LogPath, Params: String;
+  LogText: AnsiString;
 begin
   ScriptPath := ExpandConstant('{app}\Remove-Autostart.ps1');
   if not FileExists(ScriptPath) then

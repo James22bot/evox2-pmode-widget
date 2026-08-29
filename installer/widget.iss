@@ -26,6 +26,7 @@ OutputDir=..\dist
 OutputBaseFilename=EVO-X2-PMode-Widget-Setup-v{#MyAppVersion}
 SetupIconFile=..\resources\app.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
+UninstallDisplayName={#MyAppName}
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern

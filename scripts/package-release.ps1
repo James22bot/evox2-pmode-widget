@@ -17,7 +17,7 @@ if ($iss -notmatch ('#define MyAppVersion "' + [regex]::Escape($version) + '"'))
 }
 $widgetRunEntry = [regex]::Match(
     $iss,
-    '(?m)^Filename:\s*"\{app\}\\\{#MyAppExeName\}";.*?Flags:\s*([^\r\n]+)$'
+    '(?m)^Filename:\s*"\{app\}\\\{#MyAppExeName\}";.*?Flags:\s*([^\r\n]+)\r?$'
 )
 if (-not $widgetRunEntry.Success) {
     throw 'Widget post-install launch entry is missing.'

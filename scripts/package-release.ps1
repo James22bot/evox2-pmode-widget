@@ -15,6 +15,17 @@ $iss = Get-Content -LiteralPath 'installer\widget.iss' -Raw
 if ($iss -notmatch ('#define MyAppVersion "' + [regex]::Escape($version) + '"')) {
     throw 'VERSION and installer/widget.iss disagree.'
 }
+$widgetRunEntry = [regex]::Match(
+    $iss,
+    '(?m)^Filename:\s*"\{app\}\\\{#MyAppExeName\}";.*?Flags:\s*([^\r\n]+)$'
+)
+if (-not $widgetRunEntry.Success) {
+    throw 'Widget post-install launch entry is missing.'
+}
+$widgetRunFlags = @($widgetRunEntry.Groups[1].Value -split '\s+' | Where-Object { $_ })
+if ($widgetRunFlags -notcontains 'postinstall' -or $widgetRunFlags -notcontains 'runascurrentuser') {
+    throw 'Widget post-install launch must explicitly retain the elevated Setup token.'
+}
 $dist = Join-Path $root 'dist'
 if (Test-Path -LiteralPath $dist) {
     Remove-Item -LiteralPath $dist -Recurse -Force

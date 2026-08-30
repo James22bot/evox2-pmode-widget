@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.3-beta.2
+
+- Fix the optional post-install launch after a normal double-click by explicitly retaining Setup's approved elevated token.
+- Preserve UAC and the existing per-user highest-privilege logon-task security model.
+
 ## 0.3.3-beta.1
 
 - Initial public beta.

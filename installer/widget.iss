@@ -1,5 +1,5 @@
 #define MyAppName "EVO-X2 P-MODE Widget"
-#define MyAppVersion "0.3.3-beta.1"
+#define MyAppVersion "0.3.3-beta.2"
 #define MyAppPublisher "Andreas Ruhl"
 #define MyAppExeName "evox2-pmode-overlay.exe"
 
@@ -11,7 +11,7 @@ AppPublisher={#MyAppPublisher}
 AppPublisherURL=https://github.com/James22bot/evox2-pmode-widget
 AppSupportURL=https://github.com/James22bot/evox2-pmode-widget/issues
 AppUpdatesURL=https://github.com/James22bot/evox2-pmode-widget/releases
-VersionInfoVersion=0.3.3.0
+VersionInfoVersion=0.3.3.2
 DefaultDirName={autopf}\EVO-X2 P-MODE Overlay
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
@@ -49,7 +49,8 @@ Source: "Remove-Autostart.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Name: "{userprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"
 
 [Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; WorkingDir: "{app}"; Flags: nowait postinstall skipifsilent
+; postinstall otherwise defaults to the original non-elevated token, which cannot start this requireAdministrator EXE.
+Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; WorkingDir: "{app}"; Flags: nowait postinstall runascurrentuser skipifsilent
 
 [Code]
 function PowerShellPath: String;

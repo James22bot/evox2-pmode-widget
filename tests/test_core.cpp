@@ -9,12 +9,17 @@
 
 namespace {
 
+using evox2::AcpiEcPModeWriter;
 using evox2::AcpiEcRegisterReader;
 using evox2::EcProtocolError;
+using evox2::EcWriteOutcomeError;
 using evox2::EvoX2Probe;
 using evox2::IEcIo;
 using evox2::IEcRegisterReader;
+using evox2::IPModeTransitionIo;
+using evox2::ModeTransitionResult;
 using evox2::PMode;
+using evox2::Snapshot;
 using evox2::UnsupportedHardwareError;
 
 int failures = 0;
@@ -67,6 +72,8 @@ public:
 
     void send_read_command() override { operations.emplace_back("read-command"); }
 
+    void send_write_command() override { operations.emplace_back("write-command"); }
+
     void send_register_address(std::uint8_t address) override
     {
         std::ostringstream item;
@@ -86,6 +93,16 @@ public:
         const auto value = data_.front();
         data_.pop_front();
         return value;
+    }
+
+    void send_data(std::uint8_t value) override
+    {
+        std::ostringstream item;
+        item << "value:" << std::hex << std::uppercase;
+        item.width(2);
+        item.fill('0');
+        item << static_cast<unsigned int>(value);
+        operations.push_back(item.str());
     }
 
     std::vector<std::string> operations;
@@ -117,6 +134,70 @@ private:
     std::map<std::uint8_t, std::deque<std::uint8_t>> values_;
 };
 
+class ScriptedTransitionIo final : public IPModeTransitionIo {
+public:
+    ScriptedTransitionIo(Snapshot snapshot, std::deque<PMode> readback)
+        : snapshot_(snapshot), readback_(std::move(readback))
+    {
+    }
+
+    Snapshot read_snapshot() override
+    {
+        operations.emplace_back("snapshot");
+        return snapshot_;
+    }
+
+    void write_mode(PMode mode) override
+    {
+        operations.emplace_back("write:" + std::string(evox2::mode_name(mode)));
+        ++writes;
+        if (write_error) {
+            throw EcProtocolError("scripted write failure");
+        }
+    }
+
+    void wait_for_mode_settle() override
+    {
+        operations.emplace_back("wait");
+        ++waits;
+        if (wait_error) {
+            throw EcProtocolError("scripted settle failure");
+        }
+    }
+
+    PMode read_mode_once() override
+    {
+        operations.emplace_back("readback");
+        if (readback_.empty()) {
+            throw EcProtocolError("readback script exhausted");
+        }
+        const PMode mode = readback_.front();
+        readback_.pop_front();
+        return mode;
+    }
+
+    std::vector<std::string> operations;
+    unsigned int writes = 0;
+    unsigned int waits = 0;
+    bool write_error = false;
+    bool wait_error = false;
+
+private:
+    Snapshot snapshot_;
+    std::deque<PMode> readback_;
+};
+
+Snapshot transition_snapshot(PMode mode, std::uint8_t firmware_minor = 0x08)
+{
+    return Snapshot {
+        .mode = mode,
+        .raw_mode = evox2::encode_mode(mode),
+        .firmware_major = 0x01,
+        .firmware_minor = firmware_minor,
+        .ec_temperature_celsius = 45,
+    };
+}
+
 std::map<std::uint8_t, std::deque<std::uint8_t>> valid_registers()
 {
     return {
@@ -132,8 +213,14 @@ void test_mode_mapping()
     assert_equal(PMode::Balanced, evox2::decode_mode(0x00), "balanced");
     assert_equal(PMode::Performance, evox2::decode_mode(0x01), "performance");
     assert_equal(PMode::Quiet, evox2::decode_mode(0x02), "quiet");
+    assert_equal<std::uint8_t>(0x00, evox2::encode_mode(PMode::Balanced), "balanced encoding");
+    assert_equal<std::uint8_t>(0x01, evox2::encode_mode(PMode::Performance), "performance encoding");
+    assert_equal<std::uint8_t>(0x02, evox2::encode_mode(PMode::Quiet), "quiet encoding");
     assert_equal(std::string_view("Performance"), evox2::mode_name(PMode::Performance), "mode label");
     throws<UnsupportedHardwareError>([] { (void)evox2::decode_mode(0x03); }, "unknown mode");
+    throws<UnsupportedHardwareError>(
+        [] { (void)evox2::encode_mode(static_cast<PMode>(0x03)); },
+        "unknown mode encoding");
 }
 
 void test_board_identity()
@@ -172,6 +259,206 @@ void test_pending_output_fails_closed()
         std::vector<std::string>({"status", "status", "status", "status"}),
         io.operations,
         "pending-output trace");
+}
+
+void test_write_transaction()
+{
+    ScriptedEcIo io({0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, {});
+    AcpiEcPModeWriter writer(io, 4);
+    writer.write_mode(PMode::Performance);
+    assert_equal(
+        std::vector<std::string>({
+            "status",
+            "status",
+            "write-command",
+            "status",
+            "status",
+            "address:31",
+            "status",
+            "status",
+            "value:01",
+            "status",
+            "status",
+        }),
+        io.operations,
+        "write transaction");
+}
+
+void test_write_preflight_pending_output_emits_no_command()
+{
+    ScriptedEcIo io({0x00, 0x01, 0x01, 0x01}, {});
+    AcpiEcPModeWriter writer(io, 3);
+    throws<EcProtocolError>([&] { writer.write_mode(PMode::Quiet); }, "write pending output");
+    assert_equal(
+        std::vector<std::string>({"status", "status", "status", "status"}),
+        io.operations,
+        "write preflight trace");
+}
+
+void test_write_failure_after_command_is_indeterminate_and_not_retried()
+{
+    ScriptedEcIo io({0x00, 0x00, 0x02, 0x02, 0x02}, {});
+    AcpiEcPModeWriter writer(io, 3);
+    throws<EcWriteOutcomeError>(
+        [&] { writer.write_mode(PMode::Balanced); },
+        "write outcome after command");
+    assert_equal(
+        std::vector<std::string>({"status", "status", "write-command", "status", "status", "status"}),
+        io.operations,
+        "post-command failure trace");
+}
+
+void test_write_failure_after_data_is_indeterminate_and_not_retried()
+{
+    ScriptedEcIo io({0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01, 0x01}, {});
+    AcpiEcPModeWriter writer(io, 3);
+    throws<EcWriteOutcomeError>(
+        [&] { writer.write_mode(PMode::Quiet); },
+        "write outcome after data");
+    assert_equal(
+        std::vector<std::string>({
+            "status",
+            "status",
+            "write-command",
+            "status",
+            "status",
+            "address:31",
+            "status",
+            "status",
+            "value:02",
+            "status",
+            "status",
+            "status",
+            "status",
+        }),
+        io.operations,
+        "post-data failure trace");
+}
+
+void test_invalid_write_target_emits_no_port_operation()
+{
+    ScriptedEcIo io({}, {});
+    AcpiEcPModeWriter writer(io, 3);
+    throws<UnsupportedHardwareError>(
+        [&] { writer.write_mode(static_cast<PMode>(0x03)); },
+        "invalid write target");
+    check(io.operations.empty(), "invalid target touched EC ports");
+}
+
+void test_verified_mode_transition_applies_after_stable_readback()
+{
+    ScriptedTransitionIo io(
+        transition_snapshot(PMode::Quiet),
+        {PMode::Performance, PMode::Performance});
+    const ModeTransitionResult result = evox2::apply_mode_transition(
+        io,
+        PMode::Quiet,
+        PMode::Performance);
+
+    check(result.changed, "applied transition not marked changed");
+    assert_equal(PMode::Performance, result.authoritative_mode, "applied authoritative mode");
+    assert_equal<unsigned int>(1, io.writes, "applied write count");
+    assert_equal<unsigned int>(1, io.waits, "applied settle count");
+    assert_equal(
+        std::vector<std::string>({"snapshot", "write:Performance", "wait", "readback", "readback"}),
+        io.operations,
+        "applied transition trace");
+}
+
+void test_verified_mode_transition_noop_emits_no_write()
+{
+    ScriptedTransitionIo io(transition_snapshot(PMode::Balanced), {});
+    const ModeTransitionResult result = evox2::apply_mode_transition(
+        io,
+        PMode::Balanced,
+        PMode::Balanced);
+
+    check(!result.changed, "no-op transition marked changed");
+    assert_equal(PMode::Balanced, result.authoritative_mode, "no-op authoritative mode");
+    assert_equal<unsigned int>(0, io.writes, "no-op write count");
+    assert_equal(std::vector<std::string>({"snapshot"}), io.operations, "no-op transition trace");
+}
+
+void test_verified_mode_transition_accepts_race_already_at_target_without_write()
+{
+    ScriptedTransitionIo io(transition_snapshot(PMode::Performance), {});
+    const ModeTransitionResult result = evox2::apply_mode_transition(
+        io,
+        PMode::Quiet,
+        PMode::Performance);
+
+    check(!result.changed, "race-at-target transition marked changed");
+    assert_equal(PMode::Performance, result.authoritative_mode, "race-at-target authoritative mode");
+    assert_equal<unsigned int>(0, io.writes, "race-at-target write count");
+    assert_equal(std::vector<std::string>({"snapshot"}), io.operations, "race-at-target trace");
+}
+
+void test_verified_mode_transition_rejects_stale_confirmation()
+{
+    ScriptedTransitionIo io(transition_snapshot(PMode::Balanced), {});
+    throws<EcProtocolError>(
+        [&] { (void)evox2::apply_mode_transition(io, PMode::Quiet, PMode::Performance); },
+        "stale confirmation");
+    assert_equal<unsigned int>(0, io.writes, "stale confirmation write count");
+    assert_equal(std::vector<std::string>({"snapshot"}), io.operations, "stale confirmation trace");
+}
+
+void test_verified_mode_transition_requires_exact_firmware()
+{
+    ScriptedTransitionIo io(transition_snapshot(PMode::Quiet, 0x09), {});
+    throws<UnsupportedHardwareError>(
+        [&] { (void)evox2::apply_mode_transition(io, PMode::Quiet, PMode::Performance); },
+        "unsupported write firmware");
+    assert_equal<unsigned int>(0, io.writes, "unsupported firmware write count");
+    assert_equal(std::vector<std::string>({"snapshot"}), io.operations, "unsupported firmware trace");
+}
+
+void test_verified_mode_transition_rejects_invalid_target_before_io()
+{
+    ScriptedTransitionIo io(transition_snapshot(PMode::Quiet), {});
+    throws<UnsupportedHardwareError>(
+        [&] {
+            (void)evox2::apply_mode_transition(
+                io,
+                PMode::Quiet,
+                static_cast<PMode>(0x03));
+        },
+        "invalid transition target");
+    check(io.operations.empty(), "invalid transition target touched hardware boundary");
+}
+
+void test_verified_mode_transition_mismatched_readback_is_indeterminate()
+{
+    ScriptedTransitionIo io(
+        transition_snapshot(PMode::Quiet),
+        {PMode::Balanced, PMode::Balanced});
+    throws<EcWriteOutcomeError>(
+        [&] { (void)evox2::apply_mode_transition(io, PMode::Quiet, PMode::Performance); },
+        "mismatched readback");
+    assert_equal<unsigned int>(1, io.writes, "mismatched readback write count");
+    assert_equal<unsigned int>(1, io.waits, "mismatched readback settle count");
+}
+
+void test_verified_mode_transition_changing_readback_is_indeterminate()
+{
+    ScriptedTransitionIo io(
+        transition_snapshot(PMode::Quiet),
+        {PMode::Performance, PMode::Balanced});
+    throws<EcWriteOutcomeError>(
+        [&] { (void)evox2::apply_mode_transition(io, PMode::Quiet, PMode::Performance); },
+        "changing readback");
+    assert_equal<unsigned int>(1, io.writes, "changing readback write count");
+}
+
+void test_verified_mode_transition_settle_failure_is_indeterminate()
+{
+    ScriptedTransitionIo io(transition_snapshot(PMode::Quiet), {});
+    io.wait_error = true;
+    throws<EcWriteOutcomeError>(
+        [&] { (void)evox2::apply_mode_transition(io, PMode::Quiet, PMode::Performance); },
+        "settle failure");
+    assert_equal<unsigned int>(1, io.writes, "settle failure write count");
+    assert_equal<unsigned int>(1, io.waits, "settle failure wait count");
 }
 
 void test_snapshot_and_formatting()
@@ -242,6 +529,20 @@ int main()
         {"read-only ACPI EC transaction", test_read_transaction},
         {"EC timeout fails closed", test_busy_timeout},
         {"pending EC output fails closed", test_pending_output_fails_closed},
+        {"fixed P-MODE write transaction", test_write_transaction},
+        {"write preflight pending output emits no command", test_write_preflight_pending_output_emits_no_command},
+        {"post-command failure is indeterminate", test_write_failure_after_command_is_indeterminate_and_not_retried},
+        {"post-data failure is indeterminate", test_write_failure_after_data_is_indeterminate_and_not_retried},
+        {"invalid write target emits no port operation", test_invalid_write_target_emits_no_port_operation},
+        {"verified mode transition applies", test_verified_mode_transition_applies_after_stable_readback},
+        {"verified mode transition no-op", test_verified_mode_transition_noop_emits_no_write},
+        {"verified mode transition accepts race already at target", test_verified_mode_transition_accepts_race_already_at_target_without_write},
+        {"verified mode transition rejects stale confirmation", test_verified_mode_transition_rejects_stale_confirmation},
+        {"verified mode transition requires exact firmware", test_verified_mode_transition_requires_exact_firmware},
+        {"verified mode transition rejects invalid target", test_verified_mode_transition_rejects_invalid_target_before_io},
+        {"verified mode transition rejects mismatched readback", test_verified_mode_transition_mismatched_readback_is_indeterminate},
+        {"verified mode transition rejects changing readback", test_verified_mode_transition_changing_readback_is_indeterminate},
+        {"verified mode transition reports settle failure", test_verified_mode_transition_settle_failure_is_indeterminate},
         {"snapshot validation and output", test_snapshot_and_formatting},
         {"invalid firmware fails closed", test_invalid_firmware},
         {"invalid temperature fails closed", test_invalid_temperature},

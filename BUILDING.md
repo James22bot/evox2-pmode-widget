@@ -31,7 +31,8 @@ The build:
 - links a Windows GUI-subsystem PE32+ binary;
 - embeds a `requireAdministrator` UAC manifest and PerMonitorV2 DPI declaration;
 - enables stack protection and strips debug metadata;
-- does not embed `LpcACPIEC.bin`; the signed module stays a separately replaceable LGPL component and is verified at runtime.
+- does not embed `LpcACPIEC.bin`; the signed module stays a separately replaceable LGPL component and is verified at runtime;
+- compiles the fixed, firmware-gated P-MODE write path; no build-host test performs hardware I/O.
 
 Output:
 
@@ -62,4 +63,4 @@ This produces a setup executable, portable ZIP, and `SHA256SUMS.txt` under `dist
 
 ## Scope
 
-The build host cannot execute the GUI or PawnIO path. Unit tests, static PE checks and reproducibility are build-host evidence; the actual overlay appearance and live mode refresh require the target EVO-X2 desktop.
+The build host cannot execute the GUI or PawnIO path. Unit tests, static PE checks and reproducibility are build-host evidence; the actual overlay appearance, live refresh, confirmation flow, and every real EC write require a separately authorized target EVO-X2 desktop test.

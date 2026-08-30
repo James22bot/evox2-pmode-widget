@@ -19,9 +19,9 @@ build/test_core: include/evox2/core.hpp src/core.cpp tests/test_core.cpp
 	mkdir -p build
 	$(CXX) $(HOST_FLAGS) $(HOST_SANITIZERS) src/core.cpp tests/test_core.cpp -o $@
 
-build/test_overlay_model: include/evox2/core.hpp include/evox2/overlay_model.hpp src/core.cpp src/overlay_model.cpp tests/test_overlay_model.cpp
+build/test_overlay_model: include/evox2/core.hpp include/evox2/overlay_model.hpp include/evox2/tray_actions.hpp src/core.cpp src/overlay_model.cpp src/tray_actions.cpp tests/test_overlay_model.cpp
 	mkdir -p build
-	$(CXX) $(HOST_FLAGS) $(HOST_SANITIZERS) src/core.cpp src/overlay_model.cpp tests/test_overlay_model.cpp -o $@
+	$(CXX) $(HOST_FLAGS) $(HOST_SANITIZERS) src/core.cpp src/overlay_model.cpp src/tray_actions.cpp tests/test_overlay_model.cpp -o $@
 
 verify-module:
 	printf '%s  %s\n' '$(MODULE_SHA256)' '$(MODULE_PATH)' | sha256sum -c -
@@ -32,9 +32,9 @@ build/windows/app_resources.o: resources/app.rc resources/app.manifest
 	mkdir -p build/windows
 	$(ZIG) rc /nologo /c 65001 /:auto-includes gnu /:output-format coff /:target x86_64 /i resources /fo $@ resources/app.rc
 
-build/windows/evox2-pmode-overlay.exe: verify-module include/evox2/core.hpp include/evox2/overlay_model.hpp include/evox2/windows_ec_backend.hpp src/core.cpp src/overlay_model.cpp src/windows_ec_backend.cpp src/overlay_main.cpp build/windows/app_resources.o
+build/windows/evox2-pmode-overlay.exe: verify-module include/evox2/core.hpp include/evox2/overlay_model.hpp include/evox2/tray_actions.hpp include/evox2/windows_ec_backend.hpp src/core.cpp src/overlay_model.cpp src/tray_actions.cpp src/windows_ec_backend.cpp src/overlay_main.cpp build/windows/app_resources.o
 	mkdir -p build/windows
-	$(ZIG) c++ $(WINDOWS_FLAGS) src/core.cpp src/overlay_model.cpp src/windows_ec_backend.cpp src/overlay_main.cpp build/windows/app_resources.o -lbcrypt -ladvapi32 -lshell32 -lgdi32 -luser32 -Wl,--subsystem,windows -o $@
+	$(ZIG) c++ $(WINDOWS_FLAGS) src/core.cpp src/overlay_model.cpp src/tray_actions.cpp src/windows_ec_backend.cpp src/overlay_main.cpp build/windows/app_resources.o -lbcrypt -ladvapi32 -lshell32 -lgdi32 -luser32 -Wl,--subsystem,windows -o $@
 
 clean:
 	rm -rf build

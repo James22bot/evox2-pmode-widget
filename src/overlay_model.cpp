@@ -69,6 +69,11 @@ bool OverlayModel::available() const noexcept
     return available_;
 }
 
+std::optional<PMode> OverlayModel::observed_mode() const noexcept
+{
+    return available_ ? std::optional<PMode>(mode_) : std::nullopt;
+}
+
 std::string_view OverlayModel::text() const noexcept
 {
     return text_;

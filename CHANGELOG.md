@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.3-beta.3
+
+- Add explicit tray-menu switching between Quiet, Balanced, and Performance.
+- Restrict writes to the hardware-verified EC firmware 1.08 and fixed register `0x31` values.
+- Require a current-mode confirmation, at most one write attempt, and two stable target readbacks.
+- Fail closed without automatic write retry or rollback when the outcome is uncertain, and quarantine all further writes for that program run.
+- Reject reentrant mode-change requests while confirmation is open and recheck quarantine immediately before the EC transaction.
+- Harden Windows installer CI with run-unique evidence logs, dirty-preflight preservation, process-start tracing, and scheduled-task run-time proof.
+
 ## 0.3.3-beta.2
 
 - Fix the optional post-install launch after a normal double-click by explicitly retaining Setup's approved elevated token.

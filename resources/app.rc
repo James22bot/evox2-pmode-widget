@@ -4,8 +4,8 @@
 1 RT_MANIFEST "app.manifest"
 
 1 VERSIONINFO
-FILEVERSION 0,3,3,0
-PRODUCTVERSION 0,3,3,0
+FILEVERSION 0,3,3,3
+PRODUCTVERSION 0,3,3,3
 FILEFLAGSMASK 0x3fL
 #ifdef _DEBUG
 FILEFLAGS VS_FF_DEBUG
@@ -22,12 +22,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "Andreas Rühl\0"
             VALUE "FileDescription", "EVO-X2 P-MODE Overlay\0"
-            VALUE "FileVersion", "0.3.3\0"
+            VALUE "FileVersion", "0.3.3-beta.3\0"
             VALUE "InternalName", "evox2-pmode-overlay\0"
             VALUE "LegalCopyright", "Copyright (c) 2026 Andreas Rühl and contributors\0"
             VALUE "OriginalFilename", "evox2-pmode-overlay.exe\0"
             VALUE "ProductName", "EVO-X2 P-MODE Overlay\0"
-            VALUE "ProductVersion", "0.3.3\0"
+            VALUE "ProductVersion", "0.3.3-beta.3\0"
         END
     END
     BLOCK "VarFileInfo"

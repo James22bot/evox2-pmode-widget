@@ -36,6 +36,7 @@ public:
 
     [[nodiscard]] Snapshot read_snapshot();
     [[nodiscard]] PMode read_mode();
+    [[nodiscard]] ModeTransitionResult set_mode(PMode expected_current, PMode target);
 
 private:
     class Impl;

@@ -25,6 +25,7 @@ constexpr wchar_t kModuleFileName[] = L"LpcACPIEC.bin";
 constexpr wchar_t kEcMutexName[] = L"Global\\Access_EC";
 constexpr std::size_t kExpectedModuleSize = 2612;
 constexpr std::uint8_t kPModeRegister = 0x31;
+constexpr DWORD kPModeSettleMilliseconds = 200;
 constexpr std::array<std::uint8_t, 32> kExpectedModuleSha256 {
     0xc3, 0x8f, 0xd1, 0x16, 0xe7, 0xaf, 0xf4, 0xd1,
     0xfd, 0xb0, 0xa4, 0x94, 0xe2, 0x96, 0xbe, 0x0a,
@@ -426,6 +427,39 @@ private:
     UniqueHandle handle_;
 };
 
+class EcModeTransitionIo final : public IPModeTransitionIo {
+public:
+    explicit EcModeTransitionIo(IEcIo& io)
+        : io_(io)
+    {
+    }
+
+    Snapshot read_snapshot() override
+    {
+        AcpiEcRegisterReader registers(io_);
+        return EvoX2Probe(registers).read_snapshot();
+    }
+
+    void write_mode(PMode mode) override
+    {
+        AcpiEcPModeWriter(io_).write_mode(mode);
+    }
+
+    void wait_for_mode_settle() override
+    {
+        Sleep(kPModeSettleMilliseconds);
+    }
+
+    PMode read_mode_once() override
+    {
+        AcpiEcRegisterReader registers(io_);
+        return decode_mode(registers.read_byte(kPModeRegister));
+    }
+
+private:
+    IEcIo& io_;
+};
+
 std::string registry_string(const wchar_t* value_name)
 {
     wchar_t buffer[512] = {};
@@ -533,6 +567,13 @@ PMode EcBackend::read_mode()
         throw EcProtocolError("P-MODE hat sich waehrend der Aktualisierung geaendert.");
     }
     return decode_mode(before);
+}
+
+ModeTransitionResult EcBackend::set_mode(PMode expected_current, PMode target)
+{
+    EcMutexGuard guard;
+    EcModeTransitionIo transaction(impl_->io);
+    return apply_mode_transition(transaction, expected_current, target);
 }
 
 } // namespace evox2::windows

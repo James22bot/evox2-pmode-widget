@@ -3,6 +3,7 @@
 #include "evox2/core.hpp"
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -54,6 +55,7 @@ public:
     bool set_unavailable(std::string reason);
 
     [[nodiscard]] bool available() const noexcept;
+    [[nodiscard]] std::optional<PMode> observed_mode() const noexcept;
     [[nodiscard]] std::string_view text() const noexcept;
     [[nodiscard]] Rgb color() const noexcept;
     [[nodiscard]] const std::string& detail() const noexcept;

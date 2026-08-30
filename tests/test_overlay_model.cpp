@@ -1,4 +1,5 @@
 #include "evox2/overlay_model.hpp"
+#include "evox2/tray_actions.hpp"
 
 #include <deque>
 #include <functional>
@@ -77,6 +78,7 @@ void test_initial_state()
 {
     OverlayModel model;
     check(!model.available(), "initial state must be unavailable");
+    check(!model.observed_mode().has_value(), "initial state exposed a mode");
     assert_equal(std::string_view("P-MODE: --"), model.text(), "initial text");
     assert_equal(Rgb {150, 155, 165}, model.color(), "initial color");
     check(!model.detail().empty(), "initial detail missing");
@@ -87,6 +89,7 @@ void test_mode_colors_and_labels()
     OverlayModel model;
 
     check(model.set_mode(PMode::Quiet), "quiet transition not reported");
+    assert_equal(PMode::Quiet, *model.observed_mode(), "quiet observed mode");
     assert_equal(std::string_view("P-MODE: Quiet"), model.text(), "quiet text");
     assert_equal(Rgb {80, 210, 120}, model.color(), "quiet color");
     assert_equal(std::string("EVO-X2 P-MODE: Quiet"), model.tray_tooltip(), "quiet tooltip");
@@ -108,6 +111,7 @@ void test_failure_never_leaves_stale_mode()
 
     check(model.set_unavailable("EC busy"), "failure transition not reported");
     check(!model.available(), "failure still marked available");
+    check(!model.observed_mode().has_value(), "failure retained observed mode");
     assert_equal(std::string_view("P-MODE: --"), model.text(), "failure text");
     assert_equal(Rgb {150, 155, 165}, model.color(), "failure color");
     assert_equal(std::string("EC busy"), model.detail(), "failure detail");
@@ -161,6 +165,153 @@ void test_acpi_read_port_mapping()
         "ACPI EC read port sequence");
 }
 
+void test_acpi_write_port_mapping()
+{
+    RecordingPortIo ports({});
+    AcpiEcPortIo io(ports);
+
+    io.send_write_command();
+    io.send_register_address(0x31);
+    io.send_data(0x02);
+    assert_equal(
+        std::vector<std::string>({"write:66:81", "write:62:31", "write:62:2"}),
+        ports.operations,
+        "ACPI EC write port sequence");
+}
+
+void test_fixed_tray_mode_commands()
+{
+    assert_equal(
+        PMode::Balanced,
+        *evox2::tray::target_mode(evox2::tray::kCommandSetBalanced),
+        "balanced tray command");
+    assert_equal(
+        PMode::Performance,
+        *evox2::tray::target_mode(evox2::tray::kCommandSetPerformance),
+        "performance tray command");
+    assert_equal(
+        PMode::Quiet,
+        *evox2::tray::target_mode(evox2::tray::kCommandSetQuiet),
+        "quiet tray command");
+    check(!evox2::tray::target_mode(0xFFFFFFFFu).has_value(), "unknown tray command accepted");
+}
+
+void test_mode_change_confirmation_is_explicit()
+{
+    const std::string prompt = evox2::tray::confirmation_text(PMode::Quiet, PMode::Performance);
+    check(prompt.find("Quiet") != std::string::npos, "confirmation omitted current mode");
+    check(prompt.find("Performance") != std::string::npos, "confirmation omitted target mode");
+    check(prompt.find("hoechstens einmal") != std::string::npos,
+          "confirmation overstated the at-most-once write contract");
+    check(prompt.find("genau einmal") == std::string::npos,
+          "confirmation still claims an exactly-once write");
+    check(prompt.find("kein automatischer zweiter Schreibversuch") != std::string::npos,
+          "confirmation omitted no-retry warning");
+}
+
+void test_write_quarantine_is_sticky_and_preserves_first_reason()
+{
+    evox2::tray::WriteQuarantine quarantine;
+
+    check(!quarantine.tripped(), "write quarantine started tripped");
+    check(quarantine.reason().empty(), "write quarantine started with a reason");
+    check(quarantine.trip("first indeterminate outcome"), "first trip was not reported");
+    check(quarantine.tripped(), "write quarantine did not trip");
+    assert_equal(
+        std::string_view("first indeterminate outcome"),
+        quarantine.reason(),
+        "write quarantine first reason");
+
+    check(!quarantine.trip("later error"), "write quarantine accepted a second trip");
+    assert_equal(
+        std::string_view("first indeterminate outcome"),
+        quarantine.reason(),
+        "write quarantine preserved reason");
+}
+
+void test_mode_switch_gate_stays_closed_after_display_recovery()
+{
+    evox2::tray::WriteQuarantine quarantine;
+
+    check(
+        evox2::tray::mode_switch_available(PMode::Quiet, true, quarantine),
+        "verified available mode did not permit switching");
+    check(
+        !evox2::tray::mode_switch_available(std::nullopt, true, quarantine),
+        "missing observed mode permitted switching");
+    check(
+        !evox2::tray::mode_switch_available(PMode::Quiet, false, quarantine),
+        "unverified firmware permitted switching");
+
+    quarantine.trip("post-command readback failed");
+    check(
+        !evox2::tray::mode_switch_available(PMode::Balanced, true, quarantine),
+        "recovered display mode reopened quarantined writes");
+}
+
+void test_mode_change_gate_rejects_reentrancy_and_quarantine_at_write_boundary()
+{
+    evox2::tray::WriteQuarantine quarantine;
+    evox2::tray::ModeChangeGate gate;
+    int writes = 0;
+    evox2::tray::GuardedModeChangeOutcome nested =
+        evox2::tray::GuardedModeChangeOutcome::Executed;
+
+    const auto outer = evox2::tray::run_guarded_mode_change(
+        gate,
+        quarantine,
+        [&]() {
+            nested = evox2::tray::run_guarded_mode_change(
+                gate,
+                quarantine,
+                []() { return true; },
+                [&]() { ++writes; });
+            quarantine.trip("nested indeterminate outcome");
+            return true;
+        },
+        [&]() { ++writes; });
+
+    assert_equal(
+        evox2::tray::GuardedModeChangeOutcome::Rejected,
+        nested,
+        "nested mode-change outcome");
+    assert_equal(
+        evox2::tray::GuardedModeChangeOutcome::Blocked,
+        outer,
+        "outer mode-change outcome after quarantine");
+    assert_equal(0, writes, "writes after nested request and quarantine");
+    check(!gate.in_progress(), "mode-change gate stayed active after finish");
+    check(!gate.try_begin(quarantine), "quarantined process reacquired the mode-change gate");
+
+    evox2::tray::WriteQuarantine clean_quarantine;
+    evox2::tray::ModeChangeGate clean_gate;
+    const auto clean = evox2::tray::run_guarded_mode_change(
+        clean_gate,
+        clean_quarantine,
+        []() { return true; },
+        [&]() { ++writes; });
+    assert_equal(
+        evox2::tray::GuardedModeChangeOutcome::Executed,
+        clean,
+        "clean mode-change outcome");
+    assert_equal(1, writes, "writes for clean mode change");
+    check(!clean_gate.in_progress(), "clean mode-change gate stayed active after execution");
+}
+
+void test_write_quarantine_detail_preserves_anomaly_and_recovery_boundary()
+{
+    evox2::tray::WriteQuarantine quarantine;
+    quarantine.trip("first hardware anomaly");
+
+    const std::string detail = evox2::tray::write_quarantine_detail(quarantine);
+    check(detail.find("first hardware anomaly") != std::string::npos,
+          "quarantine detail omitted first anomaly");
+    check(detail.find("Programmlauf gesperrt") != std::string::npos,
+          "quarantine detail omitted process-lifetime boundary");
+    check(detail.find("manuell") != std::string::npos,
+          "quarantine detail omitted manual recovery requirement");
+}
+
 void run(std::string_view name, const std::function<void()>& test)
 {
     try {
@@ -184,6 +335,13 @@ int main()
         {"top-right positioning", test_top_right_position},
         {"compact widget dimensions", test_compact_widget_dimensions},
         {"ACPI EC read-only port mapping", test_acpi_read_port_mapping},
+        {"ACPI EC write port mapping", test_acpi_write_port_mapping},
+        {"fixed tray mode commands", test_fixed_tray_mode_commands},
+        {"explicit mode-change confirmation", test_mode_change_confirmation_is_explicit},
+        {"sticky write quarantine", test_write_quarantine_is_sticky_and_preserves_first_reason},
+        {"write quarantine survives display recovery", test_mode_switch_gate_stays_closed_after_display_recovery},
+        {"mode-change reentrancy gate", test_mode_change_gate_rejects_reentrancy_and_quarantine_at_write_boundary},
+        {"write quarantine operator detail", test_write_quarantine_detail_preserves_anomaly_and_recovery_boundary},
     };
 
     for (const auto& [name, test] : tests) {

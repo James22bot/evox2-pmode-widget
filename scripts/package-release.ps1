@@ -8,12 +8,29 @@ $ErrorActionPreference = 'Stop'
 $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 Set-Location -LiteralPath $root
 $version = (Get-Content -LiteralPath 'VERSION' -Raw).Trim()
-if ($version -notmatch '^\d+\.\d+\.\d+-beta\.\d+$') {
+$versionMatch = [regex]::Match($version, '^(\d+)\.(\d+)\.(\d+)-beta\.(\d+)$')
+if (-not $versionMatch.Success) {
     throw "Unexpected release version: $version"
 }
+$numericVersion = "$($versionMatch.Groups[1].Value).$($versionMatch.Groups[2].Value).$($versionMatch.Groups[3].Value).$($versionMatch.Groups[4].Value)"
+$resourceVersion = "$($versionMatch.Groups[1].Value),$($versionMatch.Groups[2].Value),$($versionMatch.Groups[3].Value),$($versionMatch.Groups[4].Value)"
 $iss = Get-Content -LiteralPath 'installer\widget.iss' -Raw
 if ($iss -notmatch ('#define MyAppVersion "' + [regex]::Escape($version) + '"')) {
     throw 'VERSION and installer/widget.iss disagree.'
+}
+if ($iss -notmatch ('(?m)^VersionInfoVersion=' + [regex]::Escape($numericVersion) + '\r?$')) {
+    throw 'VERSION and installer VersionInfoVersion disagree.'
+}
+$resource = Get-Content -LiteralPath 'resources\app.rc' -Raw
+if ($resource -notmatch ('(?m)^FILEVERSION\s+' + [regex]::Escape($resourceVersion) + '\r?$') -or
+    $resource -notmatch ('(?m)^PRODUCTVERSION\s+' + [regex]::Escape($resourceVersion) + '\r?$') -or
+    $resource -notmatch ('VALUE "FileVersion", "' + [regex]::Escape($version) + '\\0"') -or
+    $resource -notmatch ('VALUE "ProductVersion", "' + [regex]::Escape($version) + '\\0"')) {
+    throw 'VERSION and resources/app.rc disagree.'
+}
+$appManifest = Get-Content -LiteralPath 'resources\app.manifest' -Raw
+if ($appManifest -notmatch ('(?s)<assemblyIdentity\b[^>]*\bversion="' + [regex]::Escape($numericVersion) + '"')) {
+    throw 'VERSION and resources/app.manifest disagree.'
 }
 $widgetRunEntry = [regex]::Match(
     $iss,

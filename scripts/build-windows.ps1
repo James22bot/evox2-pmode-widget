@@ -42,7 +42,7 @@ Invoke-Checked $Zig ($common + @(
 Invoke-Checked (Join-Path $build 'test_core.exe') @()
 
 Invoke-Checked $Zig ($common + @(
-    'src/core.cpp', 'src/overlay_model.cpp', 'tests/test_overlay_model.cpp',
+    'src/core.cpp', 'src/overlay_model.cpp', 'src/tray_actions.cpp', 'tests/test_overlay_model.cpp',
     '-o', (Join-Path $build 'test_overlay_model.exe')
 ))
 Invoke-Checked (Join-Path $build 'test_overlay_model.exe') @()
@@ -57,7 +57,7 @@ Invoke-Checked $Zig @(
 $app = Join-Path $build 'evox2-pmode-overlay.exe'
 Invoke-Checked $Zig ($common + @(
     '-s',
-    'src/core.cpp', 'src/overlay_model.cpp', 'src/windows_ec_backend.cpp', 'src/overlay_main.cpp',
+    'src/core.cpp', 'src/overlay_model.cpp', 'src/tray_actions.cpp', 'src/windows_ec_backend.cpp', 'src/overlay_main.cpp',
     $resource,
     '-lbcrypt', '-ladvapi32', '-lshell32', '-lgdi32', '-luser32',
     '-Wl,--subsystem,windows', '-o', $app

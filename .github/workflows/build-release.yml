@@ -60,7 +60,7 @@ jobs:
           $actual = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($actual -ne $expected) { throw 'Inno Setup installer hash mismatch.' }
           $process = Start-Process -FilePath $installer -ArgumentList @(
-            '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=$destination"
+            '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=`"$destination`""
           ) -Wait -PassThru
           if ($process.ExitCode -ne 0) { throw "Inno Setup install failed: $($process.ExitCode)" }
           $iscc = Join-Path $destination 'ISCC.exe'
@@ -71,69 +71,141 @@ jobs:
         shell: pwsh
         run: .\scripts\package-release.ps1 -Iscc $env:ISCC_EXE
 
+      - name: Dirty preflight preserves pre-existing evidence
+        shell: pwsh
+        run: |
+          $version = (Get-Content -LiteralPath 'VERSION' -Raw).Trim()
+          $setup = (Resolve-Path "dist\EVO-X2-PMode-Widget-Setup-v$version.exe").Path
+          $expectedApp = (Resolve-Path 'build\windows\evox2-pmode-overlay.exe').Path
+          $logDir = Join-Path (Resolve-Path 'dist').Path 'smoke-logs'
+          New-Item -ItemType Directory -Path $logDir -Force | Out-Null
+          $dirtyAppDirectory = Join-Path $env:ProgramFiles 'EVO-X2 P-MODE Overlay'
+          if (Test-Path -LiteralPath $dirtyAppDirectory) {
+            throw 'Dirty-preflight fixture collided with an existing application directory.'
+          }
+          $fixturePaths = @(
+            (Join-Path $env:RUNNER_TEMP 'evox2-setup-install.log'),
+            (Join-Path $env:RUNNER_TEMP 'evox2-setup-uninstall.log'),
+            (Join-Path ([IO.Path]::GetTempPath()) 'evox2-autostart-register.log'),
+            (Join-Path ([IO.Path]::GetTempPath()) 'evox2-autostart-remove.log'),
+            (Join-Path $logDir 'evox2-setup-install.log'),
+            (Join-Path $logDir 'evox2-setup-uninstall.log'),
+            (Join-Path $logDir 'evox2-autostart-register.log'),
+            (Join-Path $logDir 'evox2-autostart-remove.log')
+          )
+          $fixtureBytes = [Text.UTF8Encoding]::new($false).GetBytes("pre-existing-evidence-$([Guid]::NewGuid().ToString('N'))")
+          $before = @{}
+          $createdFixturePaths = [Collections.Generic.List[string]]::new()
+          $createdAppDirectory = $false
+          try {
+            foreach ($path in $fixturePaths) {
+              if (Test-Path -LiteralPath $path) {
+                throw "Dirty-preflight fixture collided with an existing file: $path"
+              }
+            }
+            foreach ($path in $fixturePaths) {
+              $fixtureStream = [IO.File]::Open(
+                $path,
+                [IO.FileMode]::CreateNew,
+                [IO.FileAccess]::Write,
+                [IO.FileShare]::None
+              )
+              $createdFixturePaths.Add($path)
+              try {
+                $fixtureStream.Write($fixtureBytes, 0, $fixtureBytes.Length)
+                $fixtureStream.Flush()
+              } finally {
+                $fixtureStream.Dispose()
+              }
+              $before[$path] = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+            }
+            New-Item -ItemType Directory -Path $dirtyAppDirectory | Out-Null
+            $createdAppDirectory = $true
+            [IO.File]::WriteAllText((Join-Path $dirtyAppDirectory 'owned-dirty-preflight-marker.txt'), 'owned by CI dirty-preflight test')
+
+            $failedAsExpected = $false
+            try {
+              .\scripts\test-installer-lifecycle.ps1 `
+                -SetupPath $setup `
+                -ExpectedAppPath $expectedApp `
+                -ExpectedVersion $version `
+                -OutputDirectory $logDir `
+                -ReceiptName 'dirty-preflight.json'
+            } catch {
+              $failedAsExpected = $true
+            }
+            if (-not $failedAsExpected) {
+              throw 'Dirty installer preflight unexpectedly succeeded.'
+            }
+            foreach ($path in $fixturePaths) {
+              if (-not (Test-Path -LiteralPath $path -PathType Leaf) -or
+                  (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -ne $before[$path]) {
+                throw "Dirty preflight changed pre-existing evidence: $path"
+              }
+            }
+            $receiptPath = Join-Path $logDir 'dirty-preflight.json'
+            $receipt = Get-Content -LiteralPath $receiptPath -Raw | ConvertFrom-Json
+            if ($receipt.schema -ne 'evox2-installer-smoke-v4' -or $receipt.status -ne 'FAIL' -or
+                $receipt.primary_failure_code -ne 'preflight_app_directory_exists' -or
+                $receipt.preflight.app_directory_exists -ne $true -or
+                $receipt.preflight.shortcut_exists -ne $false -or
+                [int]$receipt.preflight.task_count -ne 0 -or
+                [int]$receipt.preflight.uninstall_entry_count -ne 0 -or
+                [int]$receipt.preflight.widget_process_count -ne 0 -or
+                $receipt.preflight.clean -ne $false -or $receipt.installation_attempted -ne $false -or
+                $receipt.lifecycle_owned -ne $false -or
+                $null -eq $receipt.primary_failure -or
+                $null -ne $receipt.cleanup_failure -or
+                @($receipt.evidence_failures).Count -ne 0) {
+              throw 'Dirty-preflight receipt does not prove fail-closed ownership.'
+            }
+            if ([string]$receipt.producer.github_sha -ne $env:GITHUB_SHA -or
+                [string]$receipt.producer.github_run_id -ne $env:GITHUB_RUN_ID) {
+              throw 'Dirty-preflight receipt belongs to a different commit or workflow run.'
+            }
+          } finally {
+            if ($createdAppDirectory -and (Test-Path -LiteralPath $dirtyAppDirectory)) {
+              Remove-Item -LiteralPath $dirtyAppDirectory -Recurse -Force
+            }
+            foreach ($path in $createdFixturePaths) {
+              if (Test-Path -LiteralPath $path -PathType Leaf) {
+                Remove-Item -LiteralPath $path -Force
+              }
+            }
+          }
+
       - name: Silent installer and uninstaller smoke test
         shell: pwsh
         run: |
           $version = (Get-Content -LiteralPath 'VERSION' -Raw).Trim()
           $setup = (Resolve-Path "dist\EVO-X2-PMode-Widget-Setup-v$version.exe").Path
-          $installLog = Join-Path $env:RUNNER_TEMP 'setup-install.log'
-          $uninstallLog = Join-Path $env:RUNNER_TEMP 'setup-uninstall.log'
+          $expectedApp = (Resolve-Path 'build\windows\evox2-pmode-overlay.exe').Path
           $logDir = Join-Path (Resolve-Path 'dist').Path 'smoke-logs'
-          [IO.Directory]::CreateDirectory($logDir) | Out-Null
-          try {
-            $install = Start-Process -FilePath $setup -ArgumentList @(
-              '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', "/LOG=$installLog"
-            ) -Wait -PassThru
-            if ($install.ExitCode -ne 0) { throw "Silent install failed: $($install.ExitCode)" }
+          .\scripts\test-installer-lifecycle.ps1 `
+            -SetupPath $setup `
+            -ExpectedAppPath $expectedApp `
+            -ExpectedVersion $version `
+            -OutputDirectory $logDir
 
-            $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-            $taskName = "EVO-X2 P-MODE Widget $sid"
-            $appDir = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles)) 'EVO-X2 P-MODE Overlay'
-            $app = Join-Path $appDir 'evox2-pmode-overlay.exe'
-            $shortcut = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::Programs)) 'EVO-X2 P-MODE Widget.lnk'
-            if (-not (Test-Path -LiteralPath $app -PathType Leaf)) { throw 'Installed app missing.' }
-            if (-not (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue)) { throw 'Autostart task missing.' }
-            if (-not (Test-Path -LiteralPath $shortcut -PathType Leaf)) { throw 'Start-menu shortcut missing.' }
-
-            $roots = @(
-              'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall',
-              'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall'
-            )
-            $entry = $roots | ForEach-Object {
-              Get-ChildItem -LiteralPath $_ -ErrorAction SilentlyContinue | Get-ItemProperty -ErrorAction SilentlyContinue
-            } | Where-Object DisplayName -eq 'EVO-X2 P-MODE Widget' | Select-Object -First 1
-            if ($null -eq $entry) { throw 'Uninstall registry entry missing.' }
-            $uninstallCommand = [string]$entry.UninstallString
-            if ($uninstallCommand -notmatch '^"([^"]+)"') { throw 'Unexpected uninstall command.' }
-            $uninstaller = $Matches[1]
-            $remove = Start-Process -FilePath $uninstaller -ArgumentList @(
-              '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=$uninstallLog"
-            ) -PassThru
-
-            $deadline = [DateTime]::UtcNow.AddSeconds(90)
-            do {
-              Start-Sleep -Milliseconds 500
-              $taskStillExists = $null -ne (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue)
-              $arpStillExists = $null -ne ($roots | ForEach-Object {
-                Get-ChildItem -LiteralPath $_ -ErrorAction SilentlyContinue | Get-ItemProperty -ErrorAction SilentlyContinue
-              } | Where-Object DisplayName -eq 'EVO-X2 P-MODE Widget' | Select-Object -First 1)
-              $finished = -not (Test-Path -LiteralPath $appDir) -and -not $taskStillExists -and -not $arpStillExists
-            } while (-not $finished -and [DateTime]::UtcNow -lt $deadline)
-            if (-not $finished) { throw 'Silent uninstall did not finish cleanly before timeout.' }
-            if (Test-Path -LiteralPath $shortcut) { throw 'Start-menu shortcut remained after uninstall.' }
-            Write-Host 'INSTALLER_SMOKE=PASS'
-          } finally {
-            if (Test-Path -LiteralPath $installLog) { Copy-Item -LiteralPath $installLog -Destination $logDir -Force }
-            if (Test-Path -LiteralPath $uninstallLog) { Copy-Item -LiteralPath $uninstallLog -Destination $logDir -Force }
-          }
-
-      - name: Upload build artifacts and smoke logs
-        if: always()
+      - name: Upload release artifacts
+        if: success()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f  # v6
         with:
           name: evox2-pmode-widget-windows
-          path: dist/*
-          if-no-files-found: warn
+          path: |
+            dist/EVO-X2-PMode-Widget-Setup-v*.exe
+            dist/EVO-X2-PMode-Widget-v*-windows-x64.zip
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload installer smoke evidence
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f  # v6
+        with:
+          name: evox2-pmode-widget-installer-smoke
+          path: dist/smoke-logs/*
+          if-no-files-found: error
           retention-days: 30
 
   release:
@@ -152,12 +224,117 @@ jobs:
         with:
           name: evox2-pmode-widget-windows
           path: dist
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53  # v6
+        with:
+          name: evox2-pmode-widget-installer-smoke
+          path: dist/smoke-logs
       - name: Verify tag matches release version
         env:
           TAG_NAME: ${{ github.ref_name }}
         run: |
           version="$(tr -d '\r\n' < VERSION)"
           test "$TAG_NAME" = "v$version"
+      - name: Verify installer smoke evidence matches release bytes
+        shell: pwsh
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+          EXPECTED_RUN_ID: ${{ github.run_id }}
+        run: |
+          $receiptPath = 'dist/smoke-logs/installer-smoke.json'
+          $dirtyReceiptPath = 'dist/smoke-logs/dirty-preflight.json'
+          if (-not (Test-Path -LiteralPath $receiptPath -PathType Leaf)) {
+            throw 'Installer smoke receipt is missing.'
+          }
+          if (-not (Test-Path -LiteralPath $dirtyReceiptPath -PathType Leaf)) {
+            throw 'Dirty-preflight receipt is missing.'
+          }
+          $receipt = Get-Content -LiteralPath $receiptPath -Raw | ConvertFrom-Json
+          $dirtyReceipt = Get-Content -LiteralPath $dirtyReceiptPath -Raw | ConvertFrom-Json
+          if ($dirtyReceipt.schema -ne 'evox2-installer-smoke-v4' -or
+              $dirtyReceipt.status -ne 'FAIL' -or $dirtyReceipt.preflight.clean -ne $false -or
+              $dirtyReceipt.primary_failure_code -ne 'preflight_app_directory_exists' -or
+              $dirtyReceipt.preflight.app_directory_exists -ne $true -or
+              $dirtyReceipt.preflight.shortcut_exists -ne $false -or
+              [int]$dirtyReceipt.preflight.task_count -ne 0 -or
+              [int]$dirtyReceipt.preflight.uninstall_entry_count -ne 0 -or
+              [int]$dirtyReceipt.preflight.widget_process_count -ne 0 -or
+              $dirtyReceipt.installation_attempted -ne $false -or
+              $dirtyReceipt.lifecycle_owned -ne $false -or
+              $null -eq $dirtyReceipt.primary_failure -or
+              $null -ne $dirtyReceipt.cleanup_failure -or
+              @($dirtyReceipt.evidence_failures).Count -ne 0) {
+            throw 'Dirty-preflight receipt does not prove fail-closed ownership.'
+          }
+          if ([string]$dirtyReceipt.producer.github_sha -ne $env:EXPECTED_SHA -or
+              [string]$dirtyReceipt.producer.github_run_id -ne $env:EXPECTED_RUN_ID) {
+            throw 'Dirty-preflight receipt belongs to a different commit or workflow run.'
+          }
+          if ($receipt.schema -ne 'evox2-installer-smoke-v4' -or $receipt.status -ne 'PASS') {
+            throw 'Installer smoke receipt does not report a v4 PASS.'
+          }
+          if ([string]$receipt.producer.github_sha -ne $env:EXPECTED_SHA -or
+              [string]$receipt.producer.github_run_id -ne $env:EXPECTED_RUN_ID) {
+            throw 'Installer smoke receipt belongs to a different commit or workflow run.'
+          }
+          if (-not $receipt.preflight.clean -or -not $receipt.installation_attempted -or
+              -not $receipt.lifecycle_owned -or -not $receipt.contract_passed -or
+              -not $receipt.cleanup_passed) {
+            throw 'Installer smoke lifecycle contract is incomplete.'
+          }
+          if ($null -ne $receipt.primary_failure_code -or $null -ne $receipt.primary_failure -or
+              $null -ne $receipt.cleanup_failure -or
+              @($receipt.evidence_failures).Count -ne 0) {
+            throw 'Installer smoke receipt contains a recorded failure.'
+          }
+          if ([int]$receipt.widget_process_count_after_install -ne 0 -or
+              $receipt.task_start_behavior.observed_no_start -ne $true -or
+              $receipt.task_start_behavior.process_start_monitor_started -ne $true -or
+              [int]$receipt.task_start_behavior.process_start_event_count -ne 0 -or
+              @($receipt.task_start_behavior.process_start_events).Count -ne 0 -or
+              $receipt.task_start_behavior.task_last_run_after_install_start -ne $false) {
+            throw 'Installer smoke unexpectedly started the widget or scheduled task.'
+          }
+          if ([string]$receipt.expected_app_sha256 -ne [string]$receipt.installed_app_sha256) {
+            throw 'Installed application hash does not match the build candidate.'
+          }
+          $helperHashes = @($receipt.helper_hashes)
+          if ($helperHashes.Count -ne 2 -or
+              @($helperHashes | Where-Object { $_.source_sha256 -ne $_.installed_sha256 }).Count -ne 0) {
+            throw 'Installed helper hashes do not match their build inputs.'
+          }
+
+          $version = (Get-Content -LiteralPath 'VERSION' -Raw).Trim()
+          $setupName = "EVO-X2-PMode-Widget-Setup-v$version.exe"
+          $zipName = "EVO-X2-PMode-Widget-v$version-windows-x64.zip"
+          $setupPath = Join-Path 'dist' $setupName
+          $zipPath = Join-Path 'dist' $zipName
+          $setupHash = (Get-FileHash -LiteralPath $setupPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ([string]$receipt.setup_sha256 -ne $setupHash) {
+            throw 'Installer smoke receipt does not match the downloaded Setup bytes.'
+          }
+          $expectedReleaseArtifacts = @(
+            [pscustomobject]@{ Name = $setupName; Path = $setupPath },
+            [pscustomobject]@{ Name = $zipName; Path = $zipPath }
+          )
+          $manifestLines = @(Get-Content -LiteralPath 'dist/SHA256SUMS.txt')
+          if ($manifestLines.Count -ne $expectedReleaseArtifacts.Count) {
+            throw 'Release hash manifest contains an unexpected number of entries.'
+          }
+          foreach ($artifact in $expectedReleaseArtifacts) {
+            $manifestMatches = @(
+              $manifestLines | Where-Object {
+                $_ -match ('^[0-9a-f]{64}  ' + [regex]::Escape($artifact.Name) + '$')
+              }
+            )
+            if ($manifestMatches.Count -ne 1) {
+              throw "Release hash manifest does not contain exactly one $($artifact.Name) entry."
+            }
+            $manifestHash = ($manifestMatches[0] -split '  ', 2)[0]
+            $artifactHash = (Get-FileHash -LiteralPath $artifact.Path -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($manifestHash -ne $artifactHash) {
+              throw "Release hash manifest does not match downloaded bytes: $($artifact.Name)"
+            }
+          }
       - name: Attest release artifacts
         uses: actions/attest-build-provenance@96b4a1ef7235a096b17240c259729fdd70c83d45  # v2
         with:

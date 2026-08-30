@@ -1,5 +1,5 @@
 #define MyAppName "EVO-X2 P-MODE Widget"
-#define MyAppVersion "0.3.3-beta.2"
+#define MyAppVersion "0.3.3-beta.3"
 #define MyAppPublisher "Andreas Ruhl"
 #define MyAppExeName "evox2-pmode-overlay.exe"
 
@@ -11,7 +11,7 @@ AppPublisher={#MyAppPublisher}
 AppPublisherURL=https://github.com/James22bot/evox2-pmode-widget
 AppSupportURL=https://github.com/James22bot/evox2-pmode-widget/issues
 AppUpdatesURL=https://github.com/James22bot/evox2-pmode-widget/releases
-VersionInfoVersion=0.3.3.2
+VersionInfoVersion=0.3.3.3
 DefaultDirName={autopf}\EVO-X2 P-MODE Overlay
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
@@ -63,6 +63,26 @@ begin
   Result := '"' + Value + '"';
 end;
 
+function LifecycleLogNonceSuffix: String;
+var
+  Nonce: String;
+  I: Integer;
+begin
+  Nonce := ExpandConstant('{param:LIFECYCLELOGNONCE|}');
+  if Length(Nonce) > 64 then
+    RaiseException('Lifecycle log nonce is too long.');
+  for I := 1 to Length(Nonce) do
+    if not (((Nonce[I] >= '0') and (Nonce[I] <= '9')) or
+            ((Nonce[I] >= 'A') and (Nonce[I] <= 'Z')) or
+            ((Nonce[I] >= 'a') and (Nonce[I] <= 'z')) or
+            (Nonce[I] = '-')) then
+      RaiseException('Lifecycle log nonce contains an invalid character.');
+  if Nonce = '' then
+    Result := ''
+  else
+    Result := '-' + Nonce;
+end;
+
 procedure RegisterAutostart;
 var
   ResultCode: Integer;
@@ -72,7 +92,7 @@ begin
   ScriptPath := ExpandConstant('{app}\Register-Autostart.ps1');
   AppPath := ExpandConstant('{app}\{#MyAppExeName}');
   WorkDir := ExpandConstant('{app}');
-  LogPath := ExpandConstant('{tmp}\evox2-autostart-register.log');
+  LogPath := ExpandConstant('{tmp}\evox2-autostart-register') + LifecycleLogNonceSuffix + '.log';
   DeleteFile(LogPath);
   Params := '-NoProfile -ExecutionPolicy Bypass -File ' + Quoted(ScriptPath) +
     ' -AppPath ' + Quoted(AppPath) + ' -WorkingDirectory ' + Quoted(WorkDir) +
@@ -97,7 +117,7 @@ begin
   if not FileExists(ScriptPath) then
     exit;
   WorkDir := ExpandConstant('{app}');
-  LogPath := ExpandConstant('{tmp}\evox2-autostart-remove.log');
+  LogPath := ExpandConstant('{tmp}\evox2-autostart-remove') + LifecycleLogNonceSuffix + '.log';
   DeleteFile(LogPath);
   Params := '-NoProfile -ExecutionPolicy Bypass -File ' + Quoted(ScriptPath) +
     ' -LogPath ' + Quoted(LogPath);

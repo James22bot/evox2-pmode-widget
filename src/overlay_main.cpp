@@ -3,6 +3,7 @@
 #include <shellapi.h>
 
 #include "evox2/overlay_model.hpp"
+#include "evox2/tray_actions.hpp"
 #include "evox2/windows_ec_backend.hpp"
 
 #include <algorithm>
@@ -31,6 +32,8 @@ UINT taskbar_created_message = 0;
 struct AppState {
     std::unique_ptr<evox2::windows::EcBackend> backend;
     evox2::overlay::OverlayModel model;
+    evox2::tray::WriteQuarantine write_quarantine;
+    evox2::tray::ModeChangeGate mode_change_gate;
     std::optional<evox2::Snapshot> startup_snapshot;
     HWND overlay_window = nullptr;
     HWND control_window = nullptr;
@@ -208,10 +211,102 @@ void show_details(HWND window, const AppState& state)
             message += std::to_wstring(state.startup_snapshot->ec_temperature_celsius);
             message += L" C";
         }
-    } else {
+    } else if (!state.write_quarantine.tripped()) {
         message = L"Status unavailable\n" + from_utf8(state.model.detail());
+    } else {
+        message = L"Status unavailable";
+    }
+    if (state.write_quarantine.tripped()) {
+        message += L"\n\n";
+        message += from_utf8(evox2::tray::write_quarantine_detail(state.write_quarantine));
     }
     MessageBoxW(window, message.c_str(), kWindowTitle, MB_OK | MB_ICONINFORMATION | MB_TOPMOST);
+}
+
+bool mode_switch_available(const AppState& state)
+{
+    const bool exact_firmware = state.startup_snapshot.has_value()
+        && state.startup_snapshot->firmware_major == 0x01
+        && state.startup_snapshot->firmware_minor == 0x08;
+    return !state.mode_change_gate.in_progress() && evox2::tray::mode_switch_available(
+        state.model.observed_mode(),
+        exact_firmware,
+        state.write_quarantine);
+}
+
+UINT mode_menu_flags(const AppState& state, evox2::PMode mode)
+{
+    UINT flags = MF_STRING;
+    const auto current = state.model.observed_mode();
+    if (!mode_switch_available(state)) {
+        flags |= MF_GRAYED;
+    } else if (current.has_value() && *current == mode) {
+        flags |= MF_CHECKED;
+    }
+    return flags;
+}
+
+void request_mode_change(HWND owner, AppState& state, evox2::PMode target)
+{
+    HWND overlay_window = state.overlay_window;
+    const auto expected = state.model.observed_mode();
+    if (state.mode_change_gate.in_progress()) {
+        return;
+    }
+    if (state.write_quarantine.tripped()) {
+        const std::wstring message = from_utf8(
+            evox2::tray::write_quarantine_detail(state.write_quarantine));
+        MessageBoxW(owner, message.c_str(), kWindowTitle, MB_OK | MB_ICONERROR | MB_TOPMOST);
+        return;
+    }
+    if (overlay_window == nullptr || !expected.has_value() || !mode_switch_available(state)) {
+        MessageBoxW(
+            owner,
+            L"P-MODE-Umschalten ist nur mit verfuegbarem Status und der hardwaregeprueften EC-Firmware 1.08 moeglich.",
+            kWindowTitle,
+            MB_OK | MB_ICONWARNING | MB_TOPMOST);
+        return;
+    }
+
+    try {
+        std::optional<evox2::ModeTransitionResult> result;
+        const auto outcome = evox2::tray::run_guarded_mode_change(
+            state.mode_change_gate,
+            state.write_quarantine,
+            [&]() {
+                if (*expected == target) {
+                    return true;
+                }
+                const std::wstring prompt = from_utf8(
+                    evox2::tray::confirmation_text(*expected, target));
+                return MessageBoxW(
+                    owner,
+                    prompt.c_str(),
+                    L"P-MODE umschalten",
+                    MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2 | MB_TOPMOST) == IDYES;
+            },
+            [&]() {
+                result = state.backend->set_mode(*expected, target);
+            });
+        if (outcome != evox2::tray::GuardedModeChangeOutcome::Executed || !result.has_value()) {
+            return;
+        }
+        state.model.set_mode(result->authoritative_mode);
+        update_tray(overlay_window, state);
+    } catch (const evox2::EcWriteOutcomeError& error) {
+        state.write_quarantine.trip(error.what());
+        const std::string detail = evox2::tray::write_quarantine_detail(state.write_quarantine);
+        state.model.set_unavailable(detail);
+        update_tray(overlay_window, state);
+        const std::wstring message = from_utf8(detail);
+        MessageBoxW(owner, message.c_str(), kWindowTitle, MB_OK | MB_ICONERROR | MB_TOPMOST);
+    } catch (const std::exception& error) {
+        const std::string detail = "P-MODE-Umschalten fehlgeschlagen: " + std::string(error.what());
+        state.model.set_unavailable(detail);
+        update_tray(overlay_window, state);
+        const std::wstring message = from_utf8(detail);
+        MessageBoxW(owner, message.c_str(), kWindowTitle, MB_OK | MB_ICONERROR | MB_TOPMOST);
+    }
 }
 
 void show_tray_menu(HWND control_window, AppState& state)
@@ -225,6 +320,31 @@ void show_tray_menu(HWND control_window, AppState& state)
     HMENU menu = CreatePopupMenu();
     if (menu == nullptr) {
         return;
+    }
+    HMENU mode_menu = CreatePopupMenu();
+    if (mode_menu != nullptr) {
+        AppendMenuW(
+            mode_menu,
+            mode_menu_flags(state, evox2::PMode::Quiet),
+            evox2::tray::kCommandSetQuiet,
+            L"Quiet");
+        AppendMenuW(
+            mode_menu,
+            mode_menu_flags(state, evox2::PMode::Balanced),
+            evox2::tray::kCommandSetBalanced,
+            L"Balanced");
+        AppendMenuW(
+            mode_menu,
+            mode_menu_flags(state, evox2::PMode::Performance),
+            evox2::tray::kCommandSetPerformance,
+            L"Performance");
+        const wchar_t* mode_menu_label = state.write_quarantine.tripped()
+            ? L"P-MODE umschalten (gesperrt)"
+            : L"P-MODE umschalten";
+        if (!AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(mode_menu), mode_menu_label)) {
+            DestroyMenu(mode_menu);
+            mode_menu = nullptr;
+        }
     }
     AppendMenuW(menu, MF_STRING, kCommandToggle, state.visible ? L"Anzeige ausblenden" : L"Anzeige einblenden");
     AppendMenuW(menu, MF_STRING, kCommandRefresh, L"Jetzt aktualisieren");
@@ -242,6 +362,11 @@ void show_tray_menu(HWND control_window, AppState& state)
         nullptr);
     PostMessageW(control_window, WM_NULL, 0, 0);
     DestroyMenu(menu);
+
+    if (const auto target = evox2::tray::target_mode(command); target.has_value()) {
+        request_mode_change(control_window, state, *target);
+        return;
+    }
 
     switch (command) {
     case kCommandToggle:

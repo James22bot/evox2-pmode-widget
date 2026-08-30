@@ -30,6 +30,10 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Test installer lifecycle helpers
+        shell: pwsh
+        run: .\tests\test_installer_lifecycle.ps1
+
       - name: Install pinned Zig 0.16.0
         shell: pwsh
         run: |

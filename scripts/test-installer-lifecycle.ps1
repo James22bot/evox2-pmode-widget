@@ -14,6 +14,8 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
+. (Join-Path $PSScriptRoot 'installer-lifecycle-helpers.ps1')
+
 function Get-ProgramFiles64 {
     $registry = [Microsoft.Win32.RegistryKey]::OpenBaseKey(
         [Microsoft.Win32.RegistryHive]::LocalMachine,
@@ -93,7 +95,7 @@ function Get-UninstallEntries {
         $roots | ForEach-Object {
             Get-ChildItem -LiteralPath $_ -ErrorAction SilentlyContinue |
                 Get-ItemProperty -ErrorAction SilentlyContinue
-        } | Where-Object DisplayName -eq 'EVO-X2 P-MODE Widget'
+        } | Where-Object { Test-IsWidgetUninstallEntry $_ }
     )
 }
 

@@ -30,6 +30,6 @@ if ($remaining) {
     throw 'One or more EVO-X2 P-MODE Widget tasks remain after removal.'
 }
 if (-not [string]::IsNullOrWhiteSpace($LogPath)) {
-    "AUTOSTART_REMOVAL=PASS $exactTask" | Set-Content -LiteralPath $LogPath -Encoding UTF8
+    "AUTOSTART_REMOVAL=PASS $exactTask" | Set-Content -LiteralPath $LogPath -Encoding ASCII
 }
 Write-Host "AUTOSTART_REMOVAL=PASS $exactTask"

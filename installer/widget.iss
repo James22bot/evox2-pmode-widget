@@ -53,6 +53,8 @@ Name: "{userprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingD
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; WorkingDir: "{app}"; Flags: nowait postinstall runascurrentuser skipifsilent
 
 [Code]
+#include "lifecycle-receipt.iss"
+
 function PowerShellPath: String;
 begin
   Result := ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe');
@@ -105,6 +107,13 @@ begin
       LogText := '(no diagnostic log was produced)';
     RaiseException(Format('Autostart registration failed (exit code %d).', [ResultCode]) + #13#10 + #13#10 + LogText);
   end;
+  if not LoadStringFromFile(LogPath, LogText) then
+    RaiseException('Autostart registration produced no receipt.');
+  { Keep helper output in Inno's private temp directory; mirror only the success token into the persistent setup log. }
+  LogText := ValidateLifecycleReceipt(
+    LogText,
+    'AUTOSTART_TASK=PASS EVO-X2 P-MODE Widget S-1-');
+  Log('EVOX2_LIFECYCLE_RECEIPT ' + Trim(LogText));
 end;
 
 procedure RemoveAutostart;
@@ -129,6 +138,12 @@ begin
       LogText := '(no diagnostic log was produced)';
     RaiseException(Format('Autostart removal failed (exit code %d).', [ResultCode]) + #13#10 + #13#10 + LogText);
   end;
+  if not LoadStringFromFile(LogPath, LogText) then
+    RaiseException('Autostart removal produced no receipt.');
+  LogText := ValidateLifecycleReceipt(
+    LogText,
+    'AUTOSTART_REMOVAL=PASS EVO-X2 P-MODE Widget S-1-');
+  Log('EVOX2_LIFECYCLE_RECEIPT ' + Trim(LogText));
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);

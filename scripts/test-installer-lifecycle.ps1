@@ -137,51 +137,6 @@ function Wait-ForCleanRemoval(
     throw "Uninstall cleanup timed out: app=$([int](Test-Path -LiteralPath $ApplicationDirectory)) shortcut=$([int](Test-Path -LiteralPath $ShortcutPath)) tasks=$($tasks.Count) entries=$($entries.Count) processes=$($processes.Count)"
 }
 
-function Copy-LogIfPresent([string]$Source, [string]$DestinationDirectory) {
-    if (-not (Test-Path -LiteralPath $Source -PathType Leaf)) {
-        return $null
-    }
-
-    $destination = Join-Path $DestinationDirectory ([IO.Path]::GetFileName($Source))
-    $sourceStream = $null
-    $destinationStream = $null
-    $destinationCreated = $false
-    $copyError = $null
-    try {
-        $sourceStream = [IO.File]::Open(
-            $Source,
-            [IO.FileMode]::Open,
-            [IO.FileAccess]::Read,
-            [IO.FileShare]::Read
-        )
-        $destinationStream = [IO.File]::Open(
-            $destination,
-            [IO.FileMode]::CreateNew,
-            [IO.FileAccess]::Write,
-            [IO.FileShare]::None
-        )
-        $destinationCreated = $true
-        $sourceStream.CopyTo($destinationStream)
-        $destinationStream.Flush()
-    } catch {
-        $copyError = $_
-    } finally {
-        if ($null -ne $destinationStream) {
-            $destinationStream.Dispose()
-        }
-        if ($null -ne $sourceStream) {
-            $sourceStream.Dispose()
-        }
-    }
-    if ($null -ne $copyError) {
-        if ($destinationCreated -and [IO.File]::Exists($destination)) {
-            [IO.File]::Delete($destination)
-        }
-        throw $copyError
-    }
-    return $destination
-}
-
 function Get-OwnedUninstallerCandidate([string]$ExpectedDirectory) {
     if ([string]::IsNullOrWhiteSpace($ExpectedDirectory) -or
         -not (Test-Path -LiteralPath $ExpectedDirectory -PathType Container)) {
@@ -261,8 +216,6 @@ $sid = $null
 $taskName = $null
 $installLog = $null
 $uninstallLog = $null
-$registerLog = $null
-$removeLog = $null
 $lifecycleLogNonce = $null
 $processStartSourceIdentifier = $null
 $processStartSubscription = $null
@@ -383,9 +336,7 @@ try {
 
     $installLog = Join-Path $temporaryDirectory "evox2-setup-install-$lifecycleLogNonce.log"
     $uninstallLog = Join-Path $temporaryDirectory "evox2-setup-uninstall-$lifecycleLogNonce.log"
-    $registerLog = Join-Path ([IO.Path]::GetTempPath()) "evox2-autostart-register-$lifecycleLogNonce.log"
-    $removeLog = Join-Path ([IO.Path]::GetTempPath()) "evox2-autostart-remove-$lifecycleLogNonce.log"
-    foreach ($path in @($installLog, $uninstallLog, $registerLog, $removeLog)) {
+    foreach ($path in @($installLog, $uninstallLog)) {
         if (Test-Path -LiteralPath $path) {
             throw "Unique lifecycle log path already exists: $path"
         }
@@ -474,8 +425,11 @@ try {
     if ($taskRanSinceInstallStart) {
         throw "Scheduled task ran after smoke installation began: $($taskLastRunTimeUtc.ToString('o'))"
     }
-    if (-not (Test-Path -LiteralPath $registerLog -PathType Leaf) -or
-        (($registrationReceipt = (Get-Content -LiteralPath $registerLog -Raw).Trim()) -ne "AUTOSTART_TASK=PASS $taskName")) {
+    $expectedRegistrationReceipt = "AUTOSTART_TASK=PASS $taskName"
+    $registrationReceipt = Get-UniqueLifecycleReceipt `
+        -Lines @(Get-Content -LiteralPath $installLog -ErrorAction Stop) `
+        -ExpectedReceipt $expectedRegistrationReceipt
+    if ($null -eq $registrationReceipt) {
         throw 'Autostart registration receipt mismatch.'
     }
     $taskEvidence = [ordered]@{
@@ -562,8 +516,12 @@ try {
         "/LOG=`"$uninstallLog`""
     ) -PassThru | Out-Null
     Wait-ForCleanRemoval $appDirectory $shortcut ([TimeSpan]::FromSeconds(90))
-    if (-not (Test-Path -LiteralPath $removeLog -PathType Leaf) -or
-        (($removalReceipt = (Get-Content -LiteralPath $removeLog -Raw).Trim()) -ne "AUTOSTART_REMOVAL=PASS $taskName")) {
+    Wait-ForFileUnlock $uninstallLog ([TimeSpan]::FromSeconds(10))
+    $expectedRemovalReceipt = "AUTOSTART_REMOVAL=PASS $taskName"
+    $removalReceipt = Get-UniqueLifecycleReceipt `
+        -Lines @(Get-Content -LiteralPath $uninstallLog -ErrorAction Stop) `
+        -ExpectedReceipt $expectedRemovalReceipt
+    if ($null -eq $removalReceipt) {
         throw 'Autostart removal receipt mismatch.'
     }
     $cleanupPassed = $true
@@ -639,11 +597,14 @@ try {
         }
     }
 
-    foreach ($path in @($installLog, $uninstallLog, $registerLog, $removeLog)) {
+    foreach ($path in @($installLog, $uninstallLog)) {
         if (-not [string]::IsNullOrWhiteSpace($path)) {
             try {
                 if (Test-Path -LiteralPath $path -PathType Leaf) {
-                    $copiedPath = Copy-LogIfPresent $path $OutputDirectory
+                    $copiedPath = Copy-ClosedLifecycleLog `
+                        -Source $path `
+                        -DestinationDirectory $OutputDirectory `
+                        -Timeout ([TimeSpan]::FromSeconds(10))
                     if ($null -ne $copiedPath) {
                         $copiedLogs += [IO.Path]::GetFileName($copiedPath)
                     }

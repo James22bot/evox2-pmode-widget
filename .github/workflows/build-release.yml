@@ -71,6 +71,27 @@ jobs:
           if (-not (Test-Path -LiteralPath $iscc -PathType Leaf)) { throw 'ISCC.exe missing.' }
           "ISCC_EXE=$iscc" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
+      - name: Test Inno lifecycle receipt validator
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $testOutput = Join-Path $env:RUNNER_TEMP 'evox2-inno-contract'
+          New-Item -ItemType Directory -Path $testOutput | Out-Null
+          & $env:ISCC_EXE '/Qp' "/O$testOutput" '.\tests\test_lifecycle_receipt.iss'
+          if ($LASTEXITCODE -ne 0) { throw "Inno contract compilation failed: $LASTEXITCODE" }
+          $testSetup = Join-Path $testOutput 'EVOX2-Lifecycle-Receipt-Contract.exe'
+          $testLog = Join-Path $testOutput 'contract.log'
+          $process = Start-Process -FilePath $testSetup -ArgumentList @(
+            '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', "/LOG=`"$testLog`""
+          ) -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Inno contract execution failed: $($process.ExitCode)" }
+          $matches = @(
+            Get-Content -LiteralPath $testLog | Where-Object {
+              $_.EndsWith('LIFECYCLE_RECEIPT_VALIDATOR=PASS', [StringComparison]::Ordinal)
+            }
+          )
+          if ($matches.Count -ne 1) { throw 'Inno contract pass receipt is missing or duplicated.' }
+
       - name: Package setup and portable ZIP
         shell: pwsh
         run: .\scripts\package-release.ps1 -Iscc $env:ISCC_EXE

@@ -109,6 +109,6 @@ try {
 }
 
 if (-not [string]::IsNullOrWhiteSpace($LogPath)) {
-    "AUTOSTART_TASK=PASS $taskName" | Set-Content -LiteralPath $LogPath -Encoding UTF8
+    "AUTOSTART_TASK=PASS $taskName" | Set-Content -LiteralPath $LogPath -Encoding ASCII
 }
 Write-Host "AUTOSTART_TASK=PASS $taskName"

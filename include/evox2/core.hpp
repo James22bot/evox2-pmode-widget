@@ -104,7 +104,6 @@ struct Snapshot {
     std::uint8_t raw_mode;
     std::uint8_t firmware_major;
     std::uint8_t firmware_minor;
-    std::uint8_t ec_temperature_celsius;
 
     [[nodiscard]] std::string firmware_version() const;
 };

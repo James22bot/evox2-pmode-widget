@@ -207,9 +207,6 @@ void show_details(HWND window, const AppState& state)
         if (state.startup_snapshot.has_value()) {
             message += L"\nEC firmware: ";
             message += from_utf8(state.startup_snapshot->firmware_version());
-            message += L"\nStartup EC temperature: ";
-            message += std::to_wstring(state.startup_snapshot->ec_temperature_celsius);
-            message += L" C";
         }
     } else if (!state.write_quarantine.tripped()) {
         message = L"Status unavailable\n" + from_utf8(state.model.detail());

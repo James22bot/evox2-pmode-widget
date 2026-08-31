@@ -17,7 +17,6 @@ constexpr std::uint8_t kEcWriteCommand = 0x81;
 constexpr std::uint8_t kPModeRegister = 0x31;
 constexpr std::uint8_t kFirmwareMajorRegister = 0x00;
 constexpr std::uint8_t kFirmwareMinorRegister = 0x01;
-constexpr std::uint8_t kTemperatureRegister = 0x70;
 
 std::string normalized_identity(std::string_view value)
 {
@@ -310,7 +309,6 @@ Snapshot EvoX2Probe::read_snapshot()
     const std::uint8_t mode_before = reader_.read_byte(kPModeRegister);
     const std::uint8_t firmware_major = reader_.read_byte(kFirmwareMajorRegister);
     const std::uint8_t firmware_minor = reader_.read_byte(kFirmwareMinorRegister);
-    const std::uint8_t temperature = reader_.read_byte(kTemperatureRegister);
     const std::uint8_t mode_after = reader_.read_byte(kPModeRegister);
 
     if (mode_before != mode_after) {
@@ -319,16 +317,12 @@ Snapshot EvoX2Probe::read_snapshot()
     if ((firmware_major == 0 && firmware_minor == 0) || firmware_major == 0xFF || firmware_minor == 0xFF) {
         throw UnsupportedHardwareError("EC-Firmwarekennung ist unplausibel; kein AXB35-Zustand bestaetigt.");
     }
-    if (temperature < 5 || temperature > 115) {
-        throw UnsupportedHardwareError("EC-Temperatur ist unplausibel; kein AXB35-Zustand bestaetigt.");
-    }
 
     return Snapshot {
         .mode = decode_mode(mode_before),
         .raw_mode = mode_before,
         .firmware_major = firmware_major,
         .firmware_minor = firmware_minor,
-        .ec_temperature_celsius = temperature,
     };
 }
 
@@ -337,8 +331,7 @@ std::string format_text(const Snapshot& snapshot)
     std::ostringstream output;
     output << "P-MODE: " << mode_name(snapshot.mode)
            << "\nRaw: " << hexadecimal_byte(snapshot.raw_mode)
-           << "\nEC firmware: " << snapshot.firmware_version()
-           << "\nEC temperature: " << static_cast<unsigned int>(snapshot.ec_temperature_celsius) << " C";
+           << "\nEC firmware: " << snapshot.firmware_version();
     return output.str();
 }
 
@@ -347,8 +340,7 @@ std::string format_json(const Snapshot& snapshot)
     std::ostringstream output;
     output << "{\"mode\":\"" << mode_name_lower(snapshot.mode)
            << "\",\"raw\":" << static_cast<unsigned int>(snapshot.raw_mode)
-           << ",\"ec_firmware\":\"" << snapshot.firmware_version()
-           << "\",\"ec_temperature_c\":" << static_cast<unsigned int>(snapshot.ec_temperature_celsius) << '}';
+           << ",\"ec_firmware\":\"" << snapshot.firmware_version() << "\"}";
     return output.str();
 }
 

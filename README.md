@@ -64,7 +64,8 @@ The GUI:
 
 - gates execution on `EVO-X2` or `AXB35` SMBIOS identity;
 - verifies the exact PawnIO module size and SHA-256 before loading;
-- uses ACPI EC READ command `0x80` for telemetry;
+- uses ACPI EC READ command `0x80` only for P-MODE register `0x31` and firmware identity registers `0x00`/`0x01`;
+- does not read or infer CPU/GPU temperatures and does not implement thermal control; those protections remain with the BIOS and EC firmware;
 - permits ACPI EC WRITE command `0x81` only after explicit confirmation, only for register `0x31`, only with values `0x00`, `0x01`, or `0x02`, and only on EC firmware 1.08;
 - acquires `Global\\Access_EC` for each bounded read and for the complete write-plus-readback transaction;
 - revalidates the confirmed starting mode under the lock and performs no automatic write retry or rollback;

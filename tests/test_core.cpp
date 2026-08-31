@@ -121,6 +121,7 @@ public:
 
     std::uint8_t read_byte(std::uint8_t address) override
     {
+        addresses.push_back(address);
         auto& values = values_.at(address);
         if (values.empty()) {
             throw std::runtime_error("register script exhausted");
@@ -129,6 +130,8 @@ public:
         values.pop_front();
         return value;
     }
+
+    std::vector<std::uint8_t> addresses;
 
 private:
     std::map<std::uint8_t, std::deque<std::uint8_t>> values_;
@@ -194,7 +197,6 @@ Snapshot transition_snapshot(PMode mode, std::uint8_t firmware_minor = 0x08)
         .raw_mode = evox2::encode_mode(mode),
         .firmware_major = 0x01,
         .firmware_minor = firmware_minor,
-        .ec_temperature_celsius = 45,
     };
 }
 
@@ -204,7 +206,6 @@ std::map<std::uint8_t, std::deque<std::uint8_t>> valid_registers()
         {0x31, {0x00, 0x00}},
         {0x00, {0x01}},
         {0x01, {0x09}},
-        {0x70, {42}},
     };
 }
 
@@ -465,20 +466,22 @@ void test_snapshot_and_formatting()
 {
     auto values = valid_registers();
     values[0x31] = {0x01, 0x01};
-    values[0x70] = {47};
     SequenceRegisterReader reader(std::move(values));
     const auto snapshot = EvoX2Probe(reader).read_snapshot();
 
     assert_equal(PMode::Performance, snapshot.mode, "snapshot mode");
     assert_equal<std::uint8_t>(0x01, snapshot.raw_mode, "snapshot raw mode");
     assert_equal(std::string("1.09"), snapshot.firmware_version(), "firmware version");
-    assert_equal<std::uint8_t>(47, snapshot.ec_temperature_celsius, "temperature");
     assert_equal(
-        std::string("P-MODE: Performance\nRaw: 0x01\nEC firmware: 1.09\nEC temperature: 47 C"),
+        std::vector<std::uint8_t>({0x31, 0x00, 0x01, 0x31}),
+        reader.addresses,
+        "snapshot register boundary");
+    assert_equal(
+        std::string("P-MODE: Performance\nRaw: 0x01\nEC firmware: 1.09"),
         evox2::format_text(snapshot),
         "text output");
     assert_equal(
-        std::string("{\"mode\":\"performance\",\"raw\":1,\"ec_firmware\":\"1.09\",\"ec_temperature_c\":47}"),
+        std::string("{\"mode\":\"performance\",\"raw\":1,\"ec_firmware\":\"1.09\"}"),
         evox2::format_json(snapshot),
         "JSON output");
 }
@@ -490,14 +493,6 @@ void test_invalid_firmware()
     values[0x01] = {0x00};
     SequenceRegisterReader reader(std::move(values));
     throws<UnsupportedHardwareError>([&] { (void)EvoX2Probe(reader).read_snapshot(); }, "invalid firmware");
-}
-
-void test_invalid_temperature()
-{
-    auto values = valid_registers();
-    values[0x70] = {0xFF};
-    SequenceRegisterReader reader(std::move(values));
-    throws<UnsupportedHardwareError>([&] { (void)EvoX2Probe(reader).read_snapshot(); }, "invalid temperature");
 }
 
 void test_changed_mode()
@@ -545,7 +540,6 @@ int main()
         {"verified mode transition reports settle failure", test_verified_mode_transition_settle_failure_is_indeterminate},
         {"snapshot validation and output", test_snapshot_and_formatting},
         {"invalid firmware fails closed", test_invalid_firmware},
-        {"invalid temperature fails closed", test_invalid_temperature},
         {"concurrent mode change fails closed", test_changed_mode},
     };
     for (const auto& [name, test] : tests) {

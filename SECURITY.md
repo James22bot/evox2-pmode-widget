@@ -17,7 +17,8 @@ Use GitHub's private security advisory feature for vulnerabilities. Do not inclu
 - Tagged release artifacts carry GitHub build-provenance attestations. Verify them with `gh attestation verify <artifact> --repo James22bot/evox2-pmode-widget`.
 - The installer creates a highest-privilege current-user logon task because the official PawnIO ACL normally rejects non-elevated processes.
 - Install from the intended local administrator account. Over-the-shoulder elevation into a different administrator identity is unsupported in this beta.
-- Telemetry is read-only. A user-confirmed mode change permits one tightly constrained write to EC register `0x31` on the hardware-verified EC firmware 1.08.
+- Status reads are limited to P-MODE register `0x31` and firmware identity registers `0x00`/`0x01`. A user-confirmed mode change permits one tightly constrained write to register `0x31` on the hardware-verified EC firmware 1.08.
+- The widget does not read or infer CPU/GPU temperatures and implements no thermal-control policy; thermal protection remains a BIOS/EC-firmware responsibility.
 - ACPI EC port access, including readback-verified writes, still has residual concurrency and firmware risk with Windows ACPI.sys.
 
 ## Hardening invariants

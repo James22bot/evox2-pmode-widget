@@ -4,6 +4,31 @@
 
 namespace evox2::tray {
 
+bool IconRegistrationState::available() const noexcept
+{
+    return available_;
+}
+
+bool IconRegistrationState::attempt_initial(const std::function<bool()>& add_icon)
+{
+    available_ = add_icon();
+    return available_;
+}
+
+bool IconRegistrationState::recover_if_unavailable(const std::function<bool()>& add_icon)
+{
+    if (available_) {
+        return false;
+    }
+    available_ = add_icon();
+    return available_;
+}
+
+void IconRegistrationState::invalidate() noexcept
+{
+    available_ = false;
+}
+
 bool WriteQuarantine::tripped() const noexcept
 {
     return tripped_;

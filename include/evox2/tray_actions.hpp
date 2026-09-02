@@ -13,6 +13,17 @@ inline constexpr unsigned int kCommandSetBalanced = 1101;
 inline constexpr unsigned int kCommandSetPerformance = 1102;
 inline constexpr unsigned int kCommandSetQuiet = 1103;
 
+class IconRegistrationState final {
+public:
+    [[nodiscard]] bool available() const noexcept;
+    bool attempt_initial(const std::function<bool()>& add_icon);
+    bool recover_if_unavailable(const std::function<bool()>& add_icon);
+    void invalidate() noexcept;
+
+private:
+    bool available_ = false;
+};
+
 class WriteQuarantine final {
 public:
     [[nodiscard]] bool tripped() const noexcept;

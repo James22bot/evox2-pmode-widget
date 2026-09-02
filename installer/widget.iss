@@ -1,5 +1,5 @@
 #define MyAppName "EVO-X2 P-MODE Widget"
-#define MyAppVersion "0.3.3-beta.3"
+#define MyAppVersion "0.3.3-beta.4"
 #define MyAppPublisher "Andreas Ruhl"
 #define MyAppExeName "evox2-pmode-overlay.exe"
 
@@ -11,7 +11,7 @@ AppPublisher={#MyAppPublisher}
 AppPublisherURL=https://github.com/James22bot/evox2-pmode-widget
 AppSupportURL=https://github.com/James22bot/evox2-pmode-widget/issues
 AppUpdatesURL=https://github.com/James22bot/evox2-pmode-widget/releases
-VersionInfoVersion=0.3.3.3
+VersionInfoVersion=0.3.3.4
 DefaultDirName={autopf}\EVO-X2 P-MODE Overlay
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes

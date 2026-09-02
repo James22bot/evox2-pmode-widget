@@ -196,6 +196,34 @@ void test_fixed_tray_mode_commands()
     check(!evox2::tray::target_mode(0xFFFFFFFFu).has_value(), "unknown tray command accepted");
 }
 
+void test_tray_registration_recovers_once_without_duplicate_adds()
+{
+    evox2::tray::IconRegistrationState registration;
+    int attempts = 0;
+
+    check(
+        !registration.attempt_initial([&]() {
+            ++attempts;
+            return false;
+        }),
+        "failed initial tray registration reported available");
+    check(!registration.available(), "failed initial tray registration stayed available");
+    check(
+        registration.recover_if_unavailable([&]() {
+            ++attempts;
+            return true;
+        }),
+        "tray registration did not recover after shell became available");
+    check(registration.available(), "recovered tray registration stayed unavailable");
+    check(
+        !registration.recover_if_unavailable([&]() {
+            ++attempts;
+            return true;
+        }),
+        "available tray registration attempted a duplicate add");
+    assert_equal(2, attempts, "tray registration attempts through recovery");
+}
+
 void test_mode_change_confirmation_is_explicit()
 {
     const std::string prompt = evox2::tray::confirmation_text(PMode::Quiet, PMode::Performance);
@@ -337,6 +365,7 @@ int main()
         {"ACPI EC read-only port mapping", test_acpi_read_port_mapping},
         {"ACPI EC write port mapping", test_acpi_write_port_mapping},
         {"fixed tray mode commands", test_fixed_tray_mode_commands},
+        {"tray registration recovers without duplicate adds", test_tray_registration_recovers_once_without_duplicate_adds},
         {"explicit mode-change confirmation", test_mode_change_confirmation_is_explicit},
         {"sticky write quarantine", test_write_quarantine_is_sticky_and_preserves_first_reason},
         {"write quarantine survives display recovery", test_mode_switch_gate_stays_closed_after_display_recovery},

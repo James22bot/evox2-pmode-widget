@@ -37,7 +37,7 @@ After installation, no PowerShell command is needed. The widget starts immediate
 The public beta binaries are not Authenticode-signed, so Windows SmartScreen may warn. Verify both SHA-256 and the GitHub build-provenance attestation:
 
 ```powershell
-gh attestation verify .\EVO-X2-PMode-Widget-Setup-v0.3.3-beta.3.exe --repo James22bot/evox2-pmode-widget
+gh attestation verify .\EVO-X2-PMode-Widget-Setup-v0.3.3-beta.4.exe --repo James22bot/evox2-pmode-widget
 ```
 
 Run setup from the intended local administrator account and approve UAC with that same account. Over-the-shoulder credentials from a different administrator account are not supported in this beta.

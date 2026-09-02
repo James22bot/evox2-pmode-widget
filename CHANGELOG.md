@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.3-beta.4
+
+- Keep the widget running when Explorer is not yet ready at logon and recover tray registration through the existing refresh loop.
+- Recover the notification-area icon after Explorer restarts without issuing duplicate icon additions.
+
 ## 0.3.3-beta.3
 
 - Add explicit tray-menu switching between Quiet, Balanced, and Performance.

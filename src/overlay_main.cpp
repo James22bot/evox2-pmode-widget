@@ -40,7 +40,7 @@ struct AppState {
     HFONT font = nullptr;
     UINT font_dpi = 0;
     NOTIFYICONDATAW tray {};
-    bool tray_added = false;
+    evox2::tray::IconRegistrationState tray_registration;
     bool visible = true;
     unsigned int startup_retry_countdown = 0;
     unsigned int tray_health_countdown = 24;
@@ -153,10 +153,10 @@ void update_tray(HWND window, AppState& state)
 {
     const std::wstring tooltip = from_utf8(state.model.tray_tooltip());
     copy_fixed(state.tray.szTip, tooltip);
-    if (state.tray_added) {
+    if (state.tray_registration.available()) {
         state.tray.uFlags = NIF_TIP | NIF_SHOWTIP;
         if (!Shell_NotifyIconW(NIM_MODIFY, &state.tray)) {
-            state.tray_added = false;
+            state.tray_registration.invalidate();
         }
         state.tray.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP | NIF_SHOWTIP;
     }
@@ -397,7 +397,6 @@ bool add_tray_icon(HWND window, AppState& state)
     if (!Shell_NotifyIconW(NIM_ADD, &state.tray)) {
         return false;
     }
-    state.tray_added = true;
     state.tray.uVersion = NOTIFYICON_VERSION_4;
     Shell_NotifyIconW(NIM_SETVERSION, &state.tray);
     return true;
@@ -408,8 +407,9 @@ bool recover_tray_icon(HWND window, AppState& state)
     if (state.tray.hWnd != nullptr) {
         Shell_NotifyIconW(NIM_DELETE, &state.tray);
     }
-    state.tray_added = false;
-    return add_tray_icon(window, state);
+    state.tray_registration.invalidate();
+    return state.tray_registration.recover_if_unavailable(
+        [&]() { return add_tray_icon(window, state); });
 }
 
 LRESULT window_procedure_impl(HWND window, UINT message, WPARAM wparam, LPARAM lparam)
@@ -439,7 +439,7 @@ LRESULT window_procedure_impl(HWND window, UINT message, WPARAM wparam, LPARAM l
 
     case WM_TIMER:
         if (state != nullptr && wparam == kRefreshTimer) {
-            if (!state->tray_added) {
+            if (!state->tray_registration.available()) {
                 if (state->control_window != nullptr && recover_tray_icon(state->control_window, *state)) {
                     update_tray(window, *state);
                 }
@@ -523,7 +523,7 @@ LRESULT window_procedure_impl(HWND window, UINT message, WPARAM wparam, LPARAM l
             if (state->tray.hWnd != nullptr) {
                 Shell_NotifyIconW(NIM_DELETE, &state->tray);
             }
-            state->tray_added = false;
+            state->tray_registration.invalidate();
             if (state->font != nullptr) {
                 DeleteObject(state->font);
                 state->font = nullptr;
@@ -730,17 +730,10 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int)
         return 5;
     }
 
-    if (!add_tray_icon(control_window, state)) {
-        MessageBoxW(nullptr, L"Tray-Symbol konnte nicht erstellt werden.", kWindowTitle, MB_OK | MB_ICONERROR);
-        DestroyWindow(window);
-        DestroyWindow(control_window);
-        UnregisterClassW(kControlWindowClass, instance);
-        UnregisterClassW(kWindowClass, instance);
-        ReleaseMutex(singleton);
-        CloseHandle(singleton);
-        return 5;
+    if (state.tray_registration.attempt_initial(
+            [&]() { return add_tray_icon(control_window, state); })) {
+        update_tray(window, state);
     }
-    update_tray(window, state);
 
     ShowWindow(control_window, SW_SHOWNOACTIVATE);
     ShowWindow(window, SW_SHOWNOACTIVATE);
